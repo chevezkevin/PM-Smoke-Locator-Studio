@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.12"
+APP_VERSION = "0.3.13"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -294,6 +294,7 @@ Modelo de escape: filtra los puntos por escape.
 Vista X/Z: ve el escape desde arriba.
 Vista X/Y: ve el escape de lado para revisar altura y curva.
 Vista Z/Y: ve el escape de frente/atras para revisar salida hacia adelante o atras.
+Zoom boca: recomendado. Acerca la vista a la punta del escape para que no se vea aplastado el modelo completo.
 Usar este locator: activa o desactiva ese punto.
 X/Y/Z: mueve el punto exacto.
 Paso: cantidad que mueve cada boton.
@@ -1932,6 +1933,7 @@ class StudioApp:
         direction_var = tk.StringVar()
         isolate_var = tk.BooleanVar(value=True)
         view_var = tk.StringVar(value="X/Y lado")
+        zoom_var = tk.BooleanVar(value=True)
 
         outer = ttk.Frame(win, padding=14)
         outer.pack(fill="both", expand=True)
@@ -2002,6 +2004,9 @@ class StudioApp:
             state="readonly",
         )
         view_combo.pack(side="left", padx=(10, 0))
+        ttk.Checkbutton(view_controls, text="Zoom boca", variable=zoom_var, command=lambda: draw()).pack(
+            side="left", padx=(10, 0)
+        )
         ttk.Checkbutton(view_controls, text="Solo seleccionado", variable=isolate_var, command=lambda: draw()).pack(
             side="right"
         )
@@ -2129,6 +2134,31 @@ class StudioApp:
             if not points:
                 canvas.create_text(width / 2, height / 2, fill="#93a4b5", text="No hay locators en este modelo")
                 return
+            zoom_mode = bool(zoom_var.get() and isolate_var.get() and selected_key.get() in state)
+            if zoom_mode:
+                selected = selected_key.get()
+                selected_points = [point for point in points if point[0] == selected]
+                selected_outlets = [outlet for outlet in outlets if outlet[0] == selected]
+                selected_model_points = [point for point in model_points if point[0] == selected]
+                if selected_model_points and selected_points and selected_outlets:
+                    center_a = (selected_points[0][1] + selected_outlets[0][1]) / 2
+                    center_b = (selected_points[0][2] + selected_outlets[0][2]) / 2
+                    all_a = [point[1] for point in selected_model_points]
+                    all_b = [point[2] for point in selected_model_points]
+                    full_span = max(max(all_a) - min(all_a), max(all_b) - min(all_b), 0.1)
+                    radius = max(0.22, min(full_span * 0.22, 0.75))
+                    close_points = [
+                        point
+                        for point in selected_model_points
+                        if ((point[1] - center_a) ** 2 + (point[2] - center_b) ** 2) ** 0.5 <= radius
+                    ]
+                    if len(close_points) < 80:
+                        close_points = sorted(
+                            selected_model_points,
+                            key=lambda point: ((point[1] - center_a) ** 2 + (point[2] - center_b) ** 2) ** 0.5,
+                        )[: min(520, len(selected_model_points))]
+                    model_points = close_points
+                    bounds_items = []
             xs = [point[1] for point in points]
             zs = [point[2] for point in points]
             xs.extend(outlet[1] for outlet in outlets)
@@ -2141,7 +2171,7 @@ class StudioApp:
                 zs.extend([bounds_b_min, bounds_b_max])
             min_x, max_x = min(xs), max(xs)
             min_z, max_z = min(zs), max(zs)
-            pad = 42
+            pad = 58
             x_span = max(max_x - min_x, 0.1)
             z_span = max(max_z - min_z, 0.1)
 
@@ -2153,7 +2183,8 @@ class StudioApp:
             canvas.create_line(pad, height - pad, width - pad, height - pad, fill="#334155")
             canvas.create_line(pad, height - pad, pad, pad, fill="#334155")
             if isolate_var.get():
-                canvas.create_text(width - 12, 12, anchor="ne", fill="#93a4b5", text="Viendo solo seleccionado")
+                note = "Zoom boca activo" if zoom_mode else "Viendo solo seleccionado"
+                canvas.create_text(width - 12, 12, anchor="ne", fill="#93a4b5", text=note)
             model_draw = model_points
             if len(model_draw) > 2600:
                 step = max(1, len(model_draw) // 2600)
@@ -2161,7 +2192,7 @@ class StudioApp:
             for key, x_value, z_value in model_draw:
                 px, py = project(x_value, z_value)
                 color = "#475569" if key == selected_key.get() else "#26313d"
-                canvas.create_rectangle(px, py, px + 1, py + 1, outline=color)
+                canvas.create_rectangle(px - 1, py - 1, px + 1, py + 1, outline=color)
             for key, bounds in bounds_items:
                 bounds_a_min, bounds_b_min, bounds_a_max, bounds_b_max = bounds_projection(bounds)
                 left, top = project(bounds_a_min, bounds_b_max)
