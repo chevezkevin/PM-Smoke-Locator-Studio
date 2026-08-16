@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.5"
+APP_VERSION = "0.3.6"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -127,6 +127,7 @@ class LocatorCandidate:
     ordinal: int
     position: tuple[float, float, float]
     bounds: tuple[float, float, float, float, float, float]
+    outlet_position: tuple[float, float, float]
 
 
 @dataclass(frozen=True)
@@ -509,6 +510,27 @@ def locator_bounds_from_pieces(
     return (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
 
 
+def outlet_from_position_and_bounds(
+    position: tuple[float, float, float], bounds: tuple[float, float, float, float, float, float]
+) -> tuple[float, float, float]:
+    min_x, _min_y, min_z, max_x, _max_y, max_z = bounds
+    x_value, y_value, z_value = position
+    distances = {
+        "x_min": abs(x_value - min_x),
+        "x_max": abs(max_x - x_value),
+        "z_min": abs(z_value - min_z),
+        "z_max": abs(max_z - z_value),
+    }
+    nearest = min(distances, key=distances.get)
+    if nearest == "x_min":
+        return (min_x, y_value, z_value)
+    if nearest == "x_max":
+        return (max_x, y_value, z_value)
+    if nearest == "z_min":
+        return (x_value, y_value, min_z)
+    return (x_value, y_value, max_z)
+
+
 def inspect_pim_locator_candidates(
     pim_path: Path,
     pim_rel: str,
@@ -555,6 +577,7 @@ def inspect_pim_locator_candidates(
                     ordinal=ordinal,
                     position=final_position,
                     bounds=candidate_bounds,
+                    outlet_position=outlet_from_position_and_bounds(final_position, candidate_bounds),
                 )
             )
     return candidates
@@ -1677,9 +1700,11 @@ class StudioApp:
         canvas.grid(row=0, column=0, columnspan=4, sticky="ew")
         view_controls = ttk.Frame(right, style="Panel.TFrame")
         view_controls.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 16))
-        ttk.Label(view_controls, text="Plano X/Z: gris = pieza de escape, punto = humo", style="Hint.TLabel").pack(
-            side="left"
-        )
+        ttk.Label(
+            view_controls,
+            text="Plano X/Z: gris = pieza, amarillo = humo, verde = salida sugerida",
+            style="Hint.TLabel",
+        ).pack(side="left")
         ttk.Checkbutton(view_controls, text="Solo seleccionado", variable=isolate_var, command=lambda: draw()).pack(
             side="right"
         )
@@ -1744,6 +1769,7 @@ class StudioApp:
             canvas.create_text(12, 32, anchor="nw", fill="#93a4b5", text="Z - atras        Z + adelante")
             keys_to_draw = [selected_key.get()] if isolate_var.get() and selected_key.get() in state else visible_keys()
             points: list[tuple[str, float, float, bool]] = []
+            outlets: list[tuple[str, float, float]] = []
             bounds_items: list[tuple[str, tuple[float, float, float, float, float, float]]] = []
             for key in keys_to_draw:
                 item = state[key]
@@ -1752,12 +1778,15 @@ class StudioApp:
                 assert isinstance(candidate, LocatorCandidate)
                 assert isinstance(position, list)
                 points.append((key, float(position[0]), float(position[2]), bool(item["enabled"])))
+                outlets.append((key, candidate.outlet_position[0], candidate.outlet_position[2]))
                 bounds_items.append((key, candidate.bounds))
             if not points:
                 canvas.create_text(width / 2, height / 2, fill="#93a4b5", text="No hay locators en este modelo")
                 return
             xs = [point[1] for point in points]
             zs = [point[2] for point in points]
+            xs.extend(outlet[1] for outlet in outlets)
+            zs.extend(outlet[2] for outlet in outlets)
             for _key, bounds in bounds_items:
                 xs.extend([bounds[0], bounds[3]])
                 zs.extend([bounds[2], bounds[5]])
@@ -1781,6 +1810,14 @@ class StudioApp:
                 right_px, bottom = project(bounds[3], bounds[2])
                 outline = "#facc15" if key == selected_key.get() else "#475569"
                 canvas.create_rectangle(left, top, right_px, bottom, outline=outline, width=2 if key == selected_key.get() else 1)
+            for key, x_value, z_value in outlets:
+                px, py = project(x_value, z_value)
+                color = "#22c55e" if key == selected_key.get() else "#166534"
+                canvas.create_line(px - 9, py, px + 9, py, fill=color, width=2)
+                canvas.create_line(px, py - 9, px, py + 9, fill=color, width=2)
+                canvas.create_oval(px - 5, py - 5, px + 5, py + 5, outline=color, width=2)
+                if key == selected_key.get():
+                    canvas.create_text(px + 12, py - 12, anchor="sw", fill=color, text="salida")
             for key, x_value, z_value, enabled in points:
                 px, py = project(x_value, z_value)
                 color = "#facc15" if key == selected_key.get() else ("#38bdf8" if enabled else "#64748b")
@@ -1839,6 +1876,17 @@ class StudioApp:
             z_var.set(fmt(values[2]))
             apply_selected()
 
+        def move_to_outlet() -> None:
+            key = selected_key.get()
+            if key not in state:
+                return
+            candidate = state[key]["candidate"]
+            assert isinstance(candidate, LocatorCandidate)
+            x_var.set(fmt(candidate.outlet_position[0]))
+            y_var.set(fmt(candidate.outlet_position[1]))
+            z_var.set(fmt(candidate.outlet_position[2]))
+            apply_selected()
+
         def model_changed(_event: object | None = None) -> None:
             if selected_key.get() and selected_key.get() in state:
                 apply_selected()
@@ -1889,14 +1937,23 @@ class StudioApp:
         ttk.Button(nudge_buttons, text="Z -", command=lambda: nudge(2, -1)).pack(side="left", padx=(14, 0))
         ttk.Button(nudge_buttons, text="Z +", command=lambda: nudge(2, 1)).pack(side="left", padx=(6, 0))
 
+        outlet_buttons = ttk.Frame(right, style="Panel.TFrame")
+        outlet_buttons.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        ttk.Button(outlet_buttons, text="Mover a salida sugerida", command=move_to_outlet).pack(side="left")
+        ttk.Label(
+            outlet_buttons,
+            text="Verde = extremo estimado de la boca del escape",
+            style="Hint.TLabel",
+        ).pack(side="left", padx=(12, 0))
+
         ttk.Label(
             right,
             text="Tip: usa 0.02 para detalle fino o 0.10 para mover mas rapido.",
             style="Hint.TLabel",
-        ).grid(row=6, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ).grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         buttons = ttk.Frame(right, style="Panel.TFrame")
-        buttons.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(18, 0))
+        buttons.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(18, 0))
         ttk.Button(buttons, text="Aplicar punto", command=apply_selected).pack(side="left")
         ttk.Button(buttons, text="Restablecer punto", command=reset_selected).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Guardar y cerrar", style="Accent.TButton", command=save_and_close).pack(side="right")
