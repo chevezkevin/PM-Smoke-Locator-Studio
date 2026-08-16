@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.2.5"
+APP_VERSION = "0.3.0"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -116,6 +116,22 @@ class ExhaustModel:
     source_def: Path
     variant: str
     look: str
+
+
+@dataclass(frozen=True)
+class LocatorCandidate:
+    key: str
+    model_no_ext: str
+    pim_rel: str
+    part_name: str
+    ordinal: int
+    position: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class LocatorEdit:
+    enabled: bool
+    position: tuple[float, float, float]
 
 
 @dataclass
@@ -454,11 +470,73 @@ def apply_offset(position: tuple[float, float, float], offset: LocatorOffset) ->
     return tuple(position[i] + offset[i] for i in range(3))  # type: ignore[return-value]
 
 
+def locator_key(pim_rel: str, part_name: str, ordinal: int) -> str:
+    return f"{pim_rel}|{part_name}|{ordinal}"
+
+
+def locator_positions_from_pieces(
+    piece_vertices: dict[int, list[tuple[float, float, float]]], pieces: list[int]
+) -> list[tuple[float, float, float]]:
+    piece_positions: list[tuple[float, float, float]] = []
+    for piece in pieces:
+        piece_positions.extend(smoke_positions(piece_vertices.get(piece, [])))
+    if len(piece_positions) > 1:
+        return merge_close_positions(piece_positions)
+
+    vertices: list[tuple[float, float, float]] = []
+    for piece in pieces:
+        vertices.extend(piece_vertices.get(piece, []))
+    return smoke_positions(vertices)
+
+
+def inspect_pim_locator_candidates(
+    pim_path: Path,
+    pim_rel: str,
+    model_no_ext: str,
+    skip_part_names: set[str] | None = None,
+    locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
+) -> list[LocatorCandidate]:
+    text = pim_path.read_text(encoding="utf-8", errors="ignore")
+    piece_vertices = parse_piece_vertices(pim_path)
+    skip_part_names = skip_part_names or set()
+    candidates: list[LocatorCandidate] = []
+    part_counts: dict[str, int] = {}
+
+    for part_match in re.finditer(r"Part \{\n.*?\n\}", text, flags=re.S):
+        block = part_match.group(0)
+        name_match = re.search(r'Name:\s*"([^"]+)"', block)
+        part_name = name_match.group(1) if name_match else "part"
+        part_counts[part_name] = part_counts.get(part_name, 0) + 1
+        part_identity = f"{part_name}#{part_counts[part_name]}"
+        if part_name in skip_part_names:
+            continue
+        pieces_match = re.search(r"Pieces:\s*([0-9 ]*)", block)
+        pieces = [int(value) for value in pieces_match.group(1).split()] if pieces_match else []
+        if not pieces:
+            continue
+        positions = locator_positions_from_pieces(piece_vertices, pieces)
+        for ordinal, position in enumerate(positions, 1):
+            final_position = apply_offset(position, locator_offset)
+            candidates.append(
+                LocatorCandidate(
+                    key=locator_key(pim_rel, part_identity, ordinal),
+                    model_no_ext=model_no_ext,
+                    pim_rel=pim_rel,
+                    part_name=part_name,
+                    ordinal=ordinal,
+                    position=final_position,
+                )
+            )
+    return candidates
+
+
 def patch_pim_with_smoke(
     pim_path: Path,
+    pim_rel: str = "",
     skip_part_names: set[str] | None = None,
     locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
     smoke_scale: float = 1.0,
+    locator_edits: dict[str, LocatorEdit] | None = None,
 ) -> tuple[int, int, int, list[str]]:
     text = pim_path.read_text(encoding="utf-8", errors="ignore")
     piece_vertices = parse_piece_vertices(pim_path)
@@ -483,24 +561,15 @@ def patch_pim_with_smoke(
     next_locator = len(preserved_blocks)
     new_blocks = preserved_blocks[:]
     added = 0
-
-    def locators_from_pieces(pieces: list[int]) -> list[tuple[float, float, float]]:
-        piece_positions: list[tuple[float, float, float]] = []
-        for piece in pieces:
-            piece_positions.extend(smoke_positions(piece_vertices.get(piece, [])))
-        if len(piece_positions) > 1:
-            return merge_close_positions(piece_positions)
-
-        vertices: list[tuple[float, float, float]] = []
-        for piece in pieces:
-            vertices.extend(piece_vertices.get(piece, []))
-        return smoke_positions(vertices)
+    part_counts: dict[str, int] = {}
 
     def patch_part(match: re.Match[str]) -> str:
         nonlocal next_locator, added
         block = match.group(0)
         name_match = re.search(r'Name:\s*"([^"]+)"', block)
         part_name = name_match.group(1) if name_match else ""
+        part_counts[part_name] = part_counts.get(part_name, 0) + 1
+        part_identity = f"{part_name}#{part_counts[part_name]}"
         pieces_match = re.search(r"Pieces:\s*([0-9 ]*)", block)
         locators_match = re.search(r"Locators:\s*([0-9 ]*)", block)
 
@@ -513,9 +582,12 @@ def patch_pim_with_smoke(
         if pieces and part_name in skip_part_names:
             skipped_parts.add(part_name)
         elif pieces:
-            positions = locators_from_pieces(pieces)
-            for position in positions:
-                position = apply_offset(position, locator_offset)
+            positions = locator_positions_from_pieces(piece_vertices, pieces)
+            for ordinal, position in enumerate(positions, 1):
+                edit = (locator_edits or {}).get(locator_key(pim_rel, part_identity, ordinal))
+                if edit and not edit.enabled:
+                    continue
+                position = edit.position if edit else apply_offset(position, locator_offset)
                 index = next_locator
                 next_locator += 1
                 added += 1
@@ -932,6 +1004,48 @@ def preview_mod(mod_path: Path, cleanup_mode: str, log: LogFn = print) -> tuple[
         cleanup_paths([extract_dir], cleanup_mode, True, log)
 
 
+def inspect_mod_locator_candidates(
+    mod_path: Path,
+    cleanup_mode: str,
+    locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
+    log: LogFn = print,
+) -> list[LocatorCandidate]:
+    if not CONVERTER_PIX.exists():
+        raise ToolError(f"Missing converter: {CONVERTER_PIX}")
+    if not mod_path.exists():
+        raise ToolError(f"No existe el mod: {mod_path}")
+
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    extract_dir = WORK / f"studio_extract_{safe_name(mod_path.stem)}_{stamp}"
+    mid_dir = WORK / f"studio_mid_{safe_name(mod_path.stem)}_{stamp}"
+    temp_dirs = [extract_dir, mid_dir]
+
+    try:
+        extract_mod(mod_path, extract_dir, log)
+        models = find_exhaust_models(extract_dir)
+        if not models:
+            raise ToolError("No encontre modelos de escape en ese mod.")
+
+        log(f"Preparando editor visual con {len(models)} modelo(s)...")
+        for index, model in enumerate(models, 1):
+            log(f"[{index}/{len(models)}] {model.model_no_ext}")
+            run_command([CONVERTER_PIX, "-b", extract_dir, "-e", mid_dir, "-m", model.model_no_ext], log=log)
+
+        candidates: list[LocatorCandidate] = []
+        for pim in sorted(mid_dir.rglob("*.pim")):
+            pit = pim.with_suffix(".pit")
+            skip_parts = common_visible_parts_from_pit(pit) if pit.exists() else set()
+            pim_rel = pim.relative_to(mid_dir).as_posix()
+            model_no_ext = "/" + Path(pim_rel).with_suffix("").as_posix()
+            candidates.extend(
+                inspect_pim_locator_candidates(pim, pim_rel, model_no_ext, skip_parts, locator_offset)
+            )
+        log(f"Locators detectados para editar: {len(candidates)}")
+        return candidates
+    finally:
+        cleanup_paths(temp_dirs, cleanup_mode, True, log)
+
+
 def build_smoke_patch(
     mod_path: Path,
     output_dir: Path,
@@ -941,6 +1055,7 @@ def build_smoke_patch(
     icon_path: Path | None = None,
     locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
     smoke_scale: float = 1.0,
+    locator_edits: dict[str, LocatorEdit] | None = None,
     cleanup_mode: str = "success",
     diagnostic: bool = False,
     log: LogFn = print,
@@ -987,7 +1102,15 @@ def build_smoke_patch(
         for pim in pim_files:
             pit = pim.with_suffix(".pit")
             skip_parts = common_visible_parts_from_pit(pit) if pit.exists() else set()
-            added, removed, total, pim_warnings = patch_pim_with_smoke(pim, skip_parts, locator_offset, smoke_scale)
+            pim_rel = pim.relative_to(mid_dir).as_posix()
+            added, removed, total, pim_warnings = patch_pim_with_smoke(
+                pim,
+                pim_rel=pim_rel,
+                skip_part_names=skip_parts,
+                locator_offset=locator_offset,
+                smoke_scale=smoke_scale,
+                locator_edits=locator_edits,
+            )
             locator_count += added
             removed_smoke += removed
             warnings.extend(f"{pim.name}: {warning}" for warning in pim_warnings)
@@ -1078,8 +1201,10 @@ class StudioApp:
         self.ttk = ttk
         self.filedialog = filedialog
         self.messagebox = messagebox
-        self.queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.worker: threading.Thread | None = None
+        self.locator_edits: dict[str, LocatorEdit] = {}
+        self.locator_editor_source = ""
 
         self.root = tk.Tk()
         self.root.title(f"{APP_TITLE} {APP_VERSION}")
@@ -1221,6 +1346,7 @@ class StudioApp:
         actions.pack(fill="x")
         ttk.Button(actions, text="Analizar", command=self._analyze).pack(side="left")
         ttk.Button(actions, text="Vista previa", command=self._preview).pack(side="left", padx=(10, 0))
+        ttk.Button(actions, text="Editor locators", command=self._open_locator_editor).pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="Crear humo", style="Accent.TButton", command=self._build_patch).pack(side="left", padx=10)
         ttk.Button(actions, text="Limpiar temporales", command=self._cleanup_work).pack(side="left", padx=10)
         ttk.Button(actions, text="Limpiar log", command=self._clear_log).pack(side="right")
@@ -1408,6 +1534,236 @@ class StudioApp:
 
         self._run_worker(work)
 
+    def _open_locator_editor(self) -> None:
+        mods = self._selected_mods()
+        if not mods:
+            return
+        mod = mods[0]
+        if len(mods) > 1:
+            self.messagebox.showinfo(APP_TITLE, "El editor visual abre el primer mod seleccionado.")
+        locator_offset = self._locator_offset()
+        if locator_offset is None:
+            return
+
+        def work() -> None:
+            try:
+                candidates = inspect_mod_locator_candidates(
+                    mod,
+                    self._cleanup_mode(),
+                    locator_offset,
+                    self._thread_log,
+                )
+                self.queue.put(("locator_editor_ready", (str(mod.resolve()), candidates)))
+            except Exception as exc:
+                self.queue.put(("error", str(exc)))
+
+        self._run_worker(work)
+
+    def _show_locator_editor(self, mod_source: str, candidates: list[LocatorCandidate]) -> None:
+        if not candidates:
+            self.messagebox.showwarning(APP_TITLE, "No encontre locators para editar en ese mod.")
+            return
+
+        tk = self.tk
+        ttk = self.ttk
+        win = tk.Toplevel(self.root)
+        win.title("Editor visual de locators")
+        win.geometry("1040x680")
+        win.minsize(900, 580)
+        win.configure(bg="#101418")
+
+        state: dict[str, dict[str, object]] = {}
+        for candidate in candidates:
+            edit = self.locator_edits.get(candidate.key) if self.locator_editor_source == mod_source else None
+            state[candidate.key] = {
+                "candidate": candidate,
+                "enabled": edit.enabled if edit else True,
+                "position": list(edit.position if edit else candidate.position),
+            }
+
+        selected_key = tk.StringVar(value=candidates[0].key)
+        enabled_var = tk.BooleanVar(value=True)
+        x_var = tk.StringVar()
+        y_var = tk.StringVar()
+        z_var = tk.StringVar()
+
+        outer = ttk.Frame(win, padding=14)
+        outer.pack(fill="both", expand=True)
+        ttk.Label(outer, text="Editor visual de locators", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            outer,
+            text="Selecciona un punto, ajusta X/Y/Z o desactivalo. Estos cambios se usaran al crear humo para este mod.",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(2, 10))
+
+        body = ttk.Frame(outer)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=3)
+        body.columnconfigure(1, weight=2)
+        body.rowconfigure(0, weight=1)
+
+        table_frame = ttk.Frame(body)
+        table_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+
+        columns = ("enabled", "locator", "x", "y", "z", "part", "model")
+        tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+        headings = {
+            "enabled": "Usar",
+            "locator": "#",
+            "x": "X",
+            "y": "Y",
+            "z": "Z",
+            "part": "Parte",
+            "model": "Modelo",
+        }
+        widths = {"enabled": 58, "locator": 48, "x": 82, "y": 82, "z": 82, "part": 170, "model": 260}
+        for column in columns:
+            tree.heading(column, text=headings[column])
+            tree.column(column, width=widths[column], anchor="w", stretch=column in {"part", "model"})
+        tree.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scroll.set)
+
+        right = ttk.Frame(body, style="Panel.TFrame", padding=12)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        canvas = tk.Canvas(right, height=300, bg="#0b0f13", highlightthickness=0)
+        canvas.grid(row=0, column=0, columnspan=4, sticky="ew")
+        ttk.Label(right, text="Plano X/Z: izquierda-derecha y atras-adelante", style="Hint.TLabel").grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(6, 16)
+        )
+
+        ttk.Checkbutton(right, text="Usar este locator", variable=enabled_var).grid(row=2, column=0, columnspan=4, sticky="w")
+        ttk.Label(right, text="X", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(12, 4))
+        ttk.Entry(right, textvariable=x_var, width=10).grid(row=3, column=1, sticky="w", pady=(12, 4))
+        ttk.Label(right, text="Y", style="Card.TLabel").grid(row=3, column=2, sticky="w", pady=(12, 4), padx=(12, 0))
+        ttk.Entry(right, textvariable=y_var, width=10).grid(row=3, column=3, sticky="w", pady=(12, 4))
+        ttk.Label(right, text="Z", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=4)
+        ttk.Entry(right, textvariable=z_var, width=10).grid(row=4, column=1, sticky="w", pady=4)
+
+        def fmt(value: float) -> str:
+            return f"{value:.3f}"
+
+        def row_values(key: str) -> tuple[str, str, str, str, str, str, str]:
+            item = state[key]
+            candidate = item["candidate"]
+            position = item["position"]
+            assert isinstance(candidate, LocatorCandidate)
+            assert isinstance(position, list)
+            return (
+                "si" if item["enabled"] else "no",
+                str(candidate.ordinal),
+                fmt(float(position[0])),
+                fmt(float(position[1])),
+                fmt(float(position[2])),
+                candidate.part_name,
+                candidate.model_no_ext,
+            )
+
+        for candidate in candidates:
+            tree.insert("", "end", iid=candidate.key, values=row_values(candidate.key))
+
+        def draw() -> None:
+            canvas.delete("all")
+            width = max(canvas.winfo_width(), 320)
+            height = max(canvas.winfo_height(), 260)
+            canvas.create_text(12, 12, anchor="nw", fill="#93a4b5", text="X - izquierda   X + derecha")
+            canvas.create_text(12, 32, anchor="nw", fill="#93a4b5", text="Z - atras        Z + adelante")
+            points: list[tuple[str, float, float, bool]] = []
+            for key, item in state.items():
+                position = item["position"]
+                assert isinstance(position, list)
+                points.append((key, float(position[0]), float(position[2]), bool(item["enabled"])))
+            xs = [point[1] for point in points] or [0.0]
+            zs = [point[2] for point in points] or [0.0]
+            min_x, max_x = min(xs), max(xs)
+            min_z, max_z = min(zs), max(zs)
+            pad = 42
+            x_span = max(max_x - min_x, 0.1)
+            z_span = max(max_z - min_z, 0.1)
+            canvas.create_line(pad, height - pad, width - pad, height - pad, fill="#334155")
+            canvas.create_line(pad, height - pad, pad, pad, fill="#334155")
+            for key, x_value, z_value, enabled in points:
+                px = pad + (x_value - min_x) / x_span * (width - pad * 2)
+                py = height - pad - (z_value - min_z) / z_span * (height - pad * 2)
+                color = "#facc15" if key == selected_key.get() else ("#38bdf8" if enabled else "#64748b")
+                radius = 7 if key == selected_key.get() else 5
+                canvas.create_oval(px - radius, py - radius, px + radius, py + radius, fill=color, outline="")
+
+        def load_selected(key: str) -> None:
+            selected_key.set(key)
+            item = state[key]
+            position = item["position"]
+            assert isinstance(position, list)
+            enabled_var.set(bool(item["enabled"]))
+            x_var.set(fmt(float(position[0])))
+            y_var.set(fmt(float(position[1])))
+            z_var.set(fmt(float(position[2])))
+            tree.selection_set(key)
+            tree.see(key)
+            draw()
+
+        def apply_selected() -> bool:
+            key = selected_key.get()
+            if key not in state:
+                return False
+            try:
+                position = [float(x_var.get()), float(y_var.get()), float(z_var.get())]
+            except ValueError:
+                self.messagebox.showerror(APP_TITLE, "X/Y/Z deben ser numeros. Ejemplo: 0.10 o -0.05")
+                return False
+            state[key]["enabled"] = bool(enabled_var.get())
+            state[key]["position"] = position
+            tree.item(key, values=row_values(key))
+            draw()
+            return True
+
+        def reset_selected() -> None:
+            key = selected_key.get()
+            if key not in state:
+                return
+            candidate = state[key]["candidate"]
+            assert isinstance(candidate, LocatorCandidate)
+            state[key]["enabled"] = True
+            state[key]["position"] = list(candidate.position)
+            load_selected(key)
+            tree.item(key, values=row_values(key))
+
+        def save_and_close() -> None:
+            if not apply_selected():
+                return
+            self.locator_editor_source = mod_source
+            self.locator_edits = {}
+            for key, item in state.items():
+                position = item["position"]
+                assert isinstance(position, list)
+                self.locator_edits[key] = LocatorEdit(
+                    enabled=bool(item["enabled"]),
+                    position=(float(position[0]), float(position[1]), float(position[2])),
+                )
+            active = sum(1 for item in state.values() if item["enabled"])
+            self._log(f"Editor locators guardado: {active}/{len(state)} activos para {Path(mod_source).name}")
+            win.destroy()
+
+        def on_select(_event: object) -> None:
+            selection = tree.selection()
+            if selection:
+                load_selected(selection[0])
+
+        tree.bind("<<TreeviewSelect>>", on_select)
+        canvas.bind("<Configure>", lambda _event: draw())
+
+        buttons = ttk.Frame(right, style="Panel.TFrame")
+        buttons.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(18, 0))
+        ttk.Button(buttons, text="Aplicar punto", command=apply_selected).pack(side="left")
+        ttk.Button(buttons, text="Restablecer punto", command=reset_selected).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Guardar y cerrar", style="Accent.TButton", command=save_and_close).pack(side="right")
+
+        load_selected(candidates[0].key)
+
     def _check_updates(self) -> None:
         def work() -> None:
             try:
@@ -1472,6 +1828,7 @@ class StudioApp:
                         icon_path=icon,
                         locator_offset=locator_offset,
                         smoke_scale=smoke_scale,
+                        locator_edits=self.locator_edits if str(mod.resolve()) == self.locator_editor_source else None,
                         cleanup_mode=self._cleanup_mode(),
                         diagnostic=self.diagnostic.get(),
                         log=self._thread_log,
@@ -1498,15 +1855,15 @@ class StudioApp:
             while True:
                 kind, message = self.queue.get_nowait()
                 if kind == "log":
-                    self._log(message)
+                    self._log(str(message))
                 elif kind == "done":
                     self.progress.stop()
-                    self._log(message)
+                    self._log(str(message))
                     self._refresh_disk()
-                    self.messagebox.showinfo(APP_TITLE, message)
+                    self.messagebox.showinfo(APP_TITLE, str(message))
                 elif kind == "update_ready":
                     self.progress.stop()
-                    tag, setup = message.split("|", 1)
+                    tag, setup = str(message).split("|", 1)
                     setup_log = launch_update_setup(Path(setup))
                     text = (
                         f"Actualizacion {tag} descargada. La app se cerrara y abrira el instalador limpio.\n"
@@ -1515,11 +1872,15 @@ class StudioApp:
                     self._log(text)
                     self.messagebox.showinfo(APP_TITLE, text)
                     self.root.after(100, self.root.destroy)
+                elif kind == "locator_editor_ready":
+                    self.progress.stop()
+                    mod_source, candidates = message
+                    self._show_locator_editor(str(mod_source), candidates)
                 elif kind == "error":
                     self.progress.stop()
-                    self._log("ERROR: " + message)
+                    self._log("ERROR: " + str(message))
                     self._refresh_disk()
-                    self.messagebox.showerror(APP_TITLE, message)
+                    self.messagebox.showerror(APP_TITLE, str(message))
         except queue.Empty:
             pass
         self.root.after(100, self._pump_queue)
@@ -1568,6 +1929,7 @@ def main() -> int:
                     args.icon,
                     locator_offset,
                     smoke_scale,
+                    None,
                     args.cleanup_mode,
                     args.diagnostic,
                 )
