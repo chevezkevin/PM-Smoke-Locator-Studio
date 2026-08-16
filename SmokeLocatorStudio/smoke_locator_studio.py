@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.4"
+APP_VERSION = "0.3.5"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -1620,6 +1620,7 @@ class StudioApp:
         y_var = tk.StringVar()
         z_var = tk.StringVar()
         step_var = tk.StringVar(value="0.02")
+        isolate_var = tk.BooleanVar(value=True)
 
         outer = ttk.Frame(win, padding=14)
         outer.pack(fill="both", expand=True)
@@ -1674,8 +1675,13 @@ class StudioApp:
         right.columnconfigure(0, weight=1)
         canvas = tk.Canvas(right, height=300, bg="#0b0f13", highlightthickness=0)
         canvas.grid(row=0, column=0, columnspan=4, sticky="ew")
-        ttk.Label(right, text="Plano X/Z: gris = pieza de escape, punto = humo", style="Hint.TLabel").grid(
-            row=1, column=0, columnspan=4, sticky="w", pady=(6, 16)
+        view_controls = ttk.Frame(right, style="Panel.TFrame")
+        view_controls.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 16))
+        ttk.Label(view_controls, text="Plano X/Z: gris = pieza de escape, punto = humo", style="Hint.TLabel").pack(
+            side="left"
+        )
+        ttk.Checkbutton(view_controls, text="Solo seleccionado", variable=isolate_var, command=lambda: draw()).pack(
+            side="right"
         )
 
         ttk.Checkbutton(right, text="Usar este locator", variable=enabled_var).grid(row=2, column=0, columnspan=4, sticky="w")
@@ -1736,9 +1742,10 @@ class StudioApp:
             height = max(canvas.winfo_height(), 260)
             canvas.create_text(12, 12, anchor="nw", fill="#93a4b5", text="X - izquierda   X + derecha")
             canvas.create_text(12, 32, anchor="nw", fill="#93a4b5", text="Z - atras        Z + adelante")
+            keys_to_draw = [selected_key.get()] if isolate_var.get() and selected_key.get() in state else visible_keys()
             points: list[tuple[str, float, float, bool]] = []
             bounds_items: list[tuple[str, tuple[float, float, float, float, float, float]]] = []
-            for key in visible_keys():
+            for key in keys_to_draw:
                 item = state[key]
                 candidate = item["candidate"]
                 position = item["position"]
@@ -1767,6 +1774,8 @@ class StudioApp:
 
             canvas.create_line(pad, height - pad, width - pad, height - pad, fill="#334155")
             canvas.create_line(pad, height - pad, pad, pad, fill="#334155")
+            if isolate_var.get():
+                canvas.create_text(width - 12, 12, anchor="ne", fill="#93a4b5", text="Viendo solo seleccionado")
             for key, bounds in bounds_items:
                 left, top = project(bounds[0], bounds[5])
                 right_px, bottom = project(bounds[3], bounds[2])
