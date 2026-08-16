@@ -21,7 +21,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.16"
+APP_VERSION = "0.3.17"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -298,7 +298,7 @@ Vista X/Z: ve el escape desde arriba.
 Vista X/Y: ve el escape de lado para revisar altura y curva.
 Vista Z/Y: ve el escape de frente/atras para revisar salida hacia adelante o atras.
 Reset 3D: vuelve la camara del visor 3D a la posicion inicial.
-Abrir Blender: exporta el escape seleccionado a OBJ y abre Blender real si esta instalado. El OBJ incluye el escape, PM_humo_actual y PM_boca_detectada para revisar mejor la posicion.
+Abrir Blender: exporta el escape seleccionado a OBJ y abre Blender real con un importador automatico si esta instalado. El OBJ incluye el escape, PM_humo_actual y PM_boca_detectada para revisar mejor la posicion.
 Zoom boca: acerca la vista a la punta del escape cuando necesitas detalle. Desmarcalo si quieres ver el escape completo.
 Usar este locator: activa o desactiva ese punto.
 X/Y/Z: mueve el punto exacto.
@@ -318,7 +318,7 @@ Deja Direccion humo en Original PM. Esa es la direccion base recomendada. Solo c
 La app usa vertices reales del escape para colocar el humo en la boca mas probable. Esto ayuda con escapes rectos, curvos, cortados a 45 grados y salidas laterales. Si no queda perfecto, usa el editor visual y mueve el punto amarillo encima de la boca verde.
 
 18.1 Blender real
-El boton Abrir Blender crea un archivo OBJ en Documents/PM Smoke Locator Studio/blender y lo abre en Blender si lo encuentra.
+El boton Abrir Blender crea un archivo OBJ en Documents/PM Smoke Locator Studio/blender y abre Blender con un script que importa ese OBJ. Si Blender aparece como No responde, espera un poco porque esta importando la malla.
 Ese visor es para revisar el modelo con mas detalle. La app todavia no importa cambios desde Blender; despues de mirar el escape, vuelve al editor de locators y ajusta X/Y/Z en la app.
 
 19. Si no encuentra escapes
@@ -790,14 +790,84 @@ def export_candidate_to_blender_obj(
         cleanup_paths([extract_dir, mid_dir], "always", True, log)
 
 
-def open_obj_in_blender(obj_path: Path) -> bool:
+def blender_import_script(obj_path: Path) -> Path:
+    script_path = obj_path.with_suffix(".import_blender.py")
+    blend_path = obj_path.with_suffix(".blend")
+    obj_json = json.dumps(str(obj_path))
+    blend_json = json.dumps(str(blend_path))
+    script = f"""
+import math
+from pathlib import Path
+
+import bpy
+from mathutils import Vector
+
+obj_path = Path({obj_json})
+blend_path = Path({blend_json})
+
+bpy.ops.object.select_all(action="SELECT")
+bpy.ops.object.delete()
+
+try:
+    bpy.ops.wm.obj_import(filepath=str(obj_path))
+except Exception:
+    bpy.ops.import_scene.obj(filepath=str(obj_path))
+
+objects = list(bpy.context.scene.objects)
+for obj in objects:
+    obj.select_set(True)
+if objects:
+    bpy.context.view_layer.objects.active = objects[0]
+
+mesh_objects = [obj for obj in objects if obj.type == "MESH"]
+if mesh_objects:
+    min_x = min((obj.matrix_world @ Vector(corner)).x for obj in mesh_objects for corner in obj.bound_box)
+    max_x = max((obj.matrix_world @ Vector(corner)).x for obj in mesh_objects for corner in obj.bound_box)
+    min_y = min((obj.matrix_world @ Vector(corner)).y for obj in mesh_objects for corner in obj.bound_box)
+    max_y = max((obj.matrix_world @ Vector(corner)).y for obj in mesh_objects for corner in obj.bound_box)
+    min_z = min((obj.matrix_world @ Vector(corner)).z for obj in mesh_objects for corner in obj.bound_box)
+    max_z = max((obj.matrix_world @ Vector(corner)).z for obj in mesh_objects for corner in obj.bound_box)
+    center = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0, (min_z + max_z) / 2.0)
+    size = max(max_x - min_x, max_y - min_y, max_z - min_z, 1.0)
+
+    bpy.ops.object.light_add(type="AREA", location=(center[0], center[1] - size * 1.8, center[2] + size * 1.8))
+    bpy.context.object.name = "PM_luz_revision"
+    bpy.context.object.data.energy = 500
+    bpy.context.object.data.size = size
+
+    bpy.ops.object.camera_add(location=(center[0], center[1] - size * 2.4, center[2] + size * 1.2), rotation=(math.radians(62), 0, 0))
+    bpy.context.scene.camera = bpy.context.object
+
+    screen = getattr(bpy.context, "screen", None)
+    areas = screen.areas if screen else []
+    for area in areas:
+        if area.type == "VIEW_3D":
+            region_3d = getattr(area.spaces.active, "region_3d", None)
+            if region_3d is None:
+                continue
+            region_3d.view_perspective = "PERSP"
+            region_3d.view_location = center
+            region_3d.view_distance = size * 1.4
+            region_3d.view_rotation = (0.8660254, 0.5, 0.0, 0.0)
+
+try:
+    bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))
+except Exception:
+    pass
+"""
+    script_path.write_text(script.strip() + "\n", encoding="utf-8")
+    return script_path
+
+
+def open_obj_in_blender(obj_path: Path) -> tuple[bool, Path | None]:
     blender = blender_executable()
     if blender:
-        subprocess.Popen([str(blender), str(obj_path)], close_fds=True)
-        return True
+        script_path = blender_import_script(obj_path)
+        subprocess.Popen([str(blender), "--python", str(script_path)], close_fds=True)
+        return True, script_path
     if os.name == "nt":
         os.startfile(str(obj_path.parent))  # type: ignore[attr-defined]
-    return False
+    return False, None
 
 
 def parse_locator_blocks(text: str) -> tuple[list[tuple[int, int, str]], dict[int, str]]:
@@ -2904,9 +2974,16 @@ class StudioApp:
                         candidate.outlet_position,
                         self._thread_log,
                     )
-                    opened = open_obj_in_blender(obj_path)
+                    opened, _script_path = open_obj_in_blender(obj_path)
                     if opened:
-                        self.queue.put(("done", f"Modelo abierto en Blender:\n{obj_path}"))
+                        self.queue.put(
+                            (
+                                "done",
+                                "Modelo enviado a Blender con importador OBJ:\n"
+                                f"{obj_path}\n\n"
+                                "Si Blender dice No responde, espera mientras termina de importar.",
+                            )
+                        )
                     else:
                         self.queue.put(
                             (

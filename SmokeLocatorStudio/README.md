@@ -39,6 +39,7 @@ Herramienta visual para crear locators `model.particle.smoke_new` en modelos de 
 - Agrega vista `3D libre` tipo Blender simple para girar el escape completo con mouse y ajustar el humo viendo la forma real.
 - Mejora el dibujo 3D con silueta solida, linea central y mas vertices reales para que el escape se vea menos raro.
 - Agrega boton `Abrir Blender` para exportar el escape seleccionado a OBJ y abrirlo en Blender real si esta instalado.
+- Corrige `Abrir Blender` para importar el OBJ con un script de Blender en vez de abrirlo como archivo principal.
 
 ## Uso normal
 
@@ -69,7 +70,7 @@ dist\PMSmokeLocatorStudio.exe
 Tambien se crea una copia versionada:
 
 ```text
-dist\PMSmokeLocatorStudio_v0.3.16.exe
+dist\PMSmokeLocatorStudio_v0.3.17.exe
 ```
 
 ## Crear Setup
@@ -100,7 +101,7 @@ Para publicar actualizaciones:
 
 1. Sube el proyecto a GitHub.
 2. Cambia `APP_VERSION` y `installer.iss` a la nueva version.
-3. Crea un tag, por ejemplo `v0.3.16`.
+3. Crea un tag, por ejemplo `v0.3.17`.
 4. Sube el tag a GitHub.
 5. GitHub Actions compila el `.exe` y el `Setup`.
 6. La app instalada puede usar el boton `Actualizar` para descargar y abrir el Setup del ultimo Release.
@@ -108,8 +109,8 @@ Para publicar actualizaciones:
 Ejemplo:
 
 ```powershell
-git tag v0.3.16
-git push origin v0.3.16
+git tag v0.3.17
+git push origin v0.3.17
 ```
 
 ## Seguridad
