@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.2.4"
+APP_VERSION = "0.2.5"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -203,6 +203,33 @@ def download_update_setup(tag: str, setup_url: str, log: LogFn = print) -> Path:
     part.replace(dest)
     log(f"Setup descargado: {dest}")
     return dest
+
+
+def launch_update_setup(setup_path: Path) -> Path:
+    UPDATES.mkdir(parents=True, exist_ok=True)
+    launcher = UPDATES / "run_pm_smoke_update.cmd"
+    setup_log = UPDATES / f"{setup_path.stem}.log"
+    launcher.write_text(
+        "\n".join(
+            [
+                "@echo off",
+                "timeout /t 2 /nobreak >nul",
+                f'start /wait "" "{setup_path}" /CURRENTUSER /CLOSEAPPLICATIONS /NORESTART /LOG="{setup_log}"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    creationflags = 0
+    for name in ("CREATE_NEW_PROCESS_GROUP", "DETACHED_PROCESS", "CREATE_NO_WINDOW"):
+        creationflags |= getattr(subprocess, name, 0)
+    subprocess.Popen(
+        ["cmd.exe", "/d", "/c", str(launcher)],
+        cwd=str(UPDATES),
+        close_fds=True,
+        creationflags=creationflags,
+    )
+    return setup_log
 
 
 def game_mod_dir(game: str) -> Path:
@@ -1480,11 +1507,14 @@ class StudioApp:
                 elif kind == "update_ready":
                     self.progress.stop()
                     tag, setup = message.split("|", 1)
-                    text = f"Actualizacion {tag} descargada. Se abrira el instalador y la app se cerrara."
+                    setup_log = launch_update_setup(Path(setup))
+                    text = (
+                        f"Actualizacion {tag} descargada. La app se cerrara y abrira el instalador limpio.\n"
+                        f"Log del instalador: {setup_log}"
+                    )
                     self._log(text)
                     self.messagebox.showinfo(APP_TITLE, text)
-                    subprocess.Popen([setup, "/CURRENTUSER"], close_fds=True)
-                    self.root.after(500, self.root.destroy)
+                    self.root.after(100, self.root.destroy)
                 elif kind == "error":
                     self.progress.stop()
                     self._log("ERROR: " + message)

@@ -7,7 +7,7 @@ $dist = Join-Path $projectRoot "dist"
 $work = Join-Path $projectRoot "build"
 $tools = Join-Path $projectRoot "work\tools"
 $assets = Join-Path $scriptDir "assets"
-$exeName = "PMSmokeLocatorStudio_v0.2.4"
+$exeName = "PMSmokeLocatorStudio_v0.2.5"
 $genericExeName = "PMSmokeLocatorStudio"
 
 if (!(Test-Path -LiteralPath $app)) {
