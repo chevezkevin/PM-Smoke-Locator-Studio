@@ -1,0 +1,57 @@
+﻿$ErrorActionPreference = "Stop"
+
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = Split-Path -Parent $scriptDir
+$app = Join-Path $scriptDir "smoke_locator_studio.py"
+$dist = Join-Path $projectRoot "dist"
+$work = Join-Path $projectRoot "build"
+$tools = Join-Path $projectRoot "work\tools"
+$assets = Join-Path $scriptDir "assets"
+$exeName = "PMSmokeLocatorStudio_v0.1.8"
+
+if (!(Test-Path -LiteralPath $app)) {
+    throw "No se encontro smoke_locator_studio.py"
+}
+
+if (!(Test-Path -LiteralPath $tools)) {
+    throw "No se encontro work\tools con converter_pix y conversion_tools."
+}
+
+$oldPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+python -m PyInstaller --version *> $null
+$pyInstallerExit = $LASTEXITCODE
+$ErrorActionPreference = $oldPreference
+
+if ($pyInstallerExit -ne 0) {
+    Write-Host "Instalando PyInstaller..."
+    python -m pip install --user pyinstaller
+}
+
+$addTools = "$tools;work\tools"
+$addAssets = "$assets;SmokeLocatorStudio\assets"
+
+Set-Location -LiteralPath $projectRoot
+
+python -m PyInstaller `
+    --noconfirm `
+    --clean `
+    --windowed `
+    --onefile `
+    --name "$exeName" `
+    --distpath "$dist" `
+    --workpath "$work\pyinstaller" `
+    --specpath "$work" `
+    --add-data "$addTools" `
+    --add-data "$addAssets" `
+    "$app"
+
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller fallo creando el EXE."
+}
+
+Write-Host ""
+Write-Host "EXE creado:"
+Write-Host (Join-Path $dist "$exeName.exe")
+
+
