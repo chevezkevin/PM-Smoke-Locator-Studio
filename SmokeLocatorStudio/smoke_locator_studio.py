@@ -21,7 +21,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.15"
+APP_VERSION = "0.3.16"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -43,6 +43,7 @@ ROOT = app_root()
 BUNDLE = bundled_root()
 WORK = (Path.home() / "Documents" / "PM Smoke Locator Studio" / "work") if getattr(sys, "frozen", False) else ROOT / "work"
 UPDATES = (Path.home() / "Documents" / "PM Smoke Locator Studio" / "updates") if getattr(sys, "frozen", False) else ROOT / "outputs" / "updates"
+BLENDER_EXPORTS = Path.home() / "Documents" / "PM Smoke Locator Studio" / "blender"
 TOOLS = BUNDLE / "work" / "tools"
 DEFAULT_ICON = BUNDLE / "SmokeLocatorStudio" / "assets" / "mod_icon.jpg"
 MOD_ICON_SIZE = (276, 162)
@@ -297,6 +298,7 @@ Vista X/Z: ve el escape desde arriba.
 Vista X/Y: ve el escape de lado para revisar altura y curva.
 Vista Z/Y: ve el escape de frente/atras para revisar salida hacia adelante o atras.
 Reset 3D: vuelve la camara del visor 3D a la posicion inicial.
+Abrir Blender: exporta el escape seleccionado a OBJ y abre Blender real si esta instalado. El OBJ incluye el escape, PM_humo_actual y PM_boca_detectada para revisar mejor la posicion.
 Zoom boca: acerca la vista a la punta del escape cuando necesitas detalle. Desmarcalo si quieres ver el escape completo.
 Usar este locator: activa o desactiva ese punto.
 X/Y/Z: mueve el punto exacto.
@@ -314,6 +316,10 @@ Deja Direccion humo en Original PM. Esa es la direccion base recomendada. Solo c
 
 18. Boca inteligente
 La app usa vertices reales del escape para colocar el humo en la boca mas probable. Esto ayuda con escapes rectos, curvos, cortados a 45 grados y salidas laterales. Si no queda perfecto, usa el editor visual y mueve el punto amarillo encima de la boca verde.
+
+18.1 Blender real
+El boton Abrir Blender crea un archivo OBJ en Documents/PM Smoke Locator Studio/blender y lo abre en Blender si lo encuentra.
+Ese visor es para revisar el modelo con mas detalle. La app todavia no importa cambios desde Blender; despues de mirar el escape, vuelve al editor de locators y ajusta X/Y/Z en la app.
 
 19. Si no encuentra escapes
 Activa Modo diagnostico y presiona Analizar otra vez. Algunos mods usan carpetas o nombres raros. Revisa el reporte creado en Documents/PM Smoke Locator Studio/work.
@@ -535,6 +541,263 @@ def parse_piece_vertices(pim_path: Path) -> dict[int, list[tuple[float, float, f
                 in_piece = False
 
     return piece_vertices
+
+
+def parse_part_pieces(text: str) -> dict[str, list[int]]:
+    part_counts: dict[str, int] = {}
+    parts: dict[str, list[int]] = {}
+    for part_match in re.finditer(r"Part \{\n.*?\n\}", text, flags=re.S):
+        block = part_match.group(0)
+        name_match = re.search(r'Name:\s*"([^"]+)"', block)
+        part_name = name_match.group(1) if name_match else "part"
+        part_counts[part_name] = part_counts.get(part_name, 0) + 1
+        part_identity = f"{part_name}#{part_counts[part_name]}"
+        pieces_match = re.search(r"Pieces:\s*([0-9 ]*)", block)
+        parts[part_identity] = [int(value) for value in pieces_match.group(1).split()] if pieces_match else []
+    return parts
+
+
+def parse_piece_meshes(
+    pim_path: Path, target_pieces: set[int]
+) -> dict[int, tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]]:
+    meshes: dict[int, tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]] = {}
+    vertex_re = re.compile(
+        r"\s+\d+\s+\(\s+([&0-9a-fA-F.\-]+)\s+([&0-9a-fA-F.\-]+)\s+([&0-9a-fA-F.\-]+)\s+\)"
+    )
+    triangle_re = re.compile(r"\s+\d+\s+\(\s+(\d+)\s+(\d+)\s+(\d+)\s+\)")
+    current_index: int | None = None
+    current_vertices: list[tuple[float, float, float]] = []
+    current_triangles: list[tuple[int, int, int]] = []
+    in_piece = False
+    in_position_stream = False
+    in_triangles = False
+    depth = 0
+
+    with pim_path.open("r", encoding="utf-8", errors="ignore") as fh:
+        for line in fh:
+            stripped = line.strip()
+            if stripped == "Piece {":
+                in_piece = True
+                current_index = None
+                current_vertices = []
+                current_triangles = []
+                in_position_stream = False
+                in_triangles = False
+                depth = 1
+                continue
+
+            if not in_piece:
+                continue
+
+            depth += line.count("{") - line.count("}")
+
+            if current_index is None:
+                match_index = re.match(r"\s*Index:\s+(\d+)", line)
+                if match_index:
+                    current_index = int(match_index.group(1))
+
+            wanted = current_index in target_pieces if current_index is not None else False
+            if 'Tag: "_POSITION"' in line and wanted:
+                in_position_stream = True
+                continue
+            if stripped == "Triangles {" and wanted:
+                in_triangles = True
+                continue
+
+            if in_position_stream:
+                if stripped == "}":
+                    in_position_stream = False
+                    continue
+                match_vertex = vertex_re.match(line)
+                if match_vertex:
+                    current_vertices.append(tuple(read_float_token(part) for part in match_vertex.groups()))
+
+            if in_triangles:
+                if stripped == "}":
+                    in_triangles = False
+                    continue
+                match_triangle = triangle_re.match(line)
+                if match_triangle:
+                    current_triangles.append(tuple(int(value) for value in match_triangle.groups()))
+
+            if depth == 0:
+                if current_index in target_pieces:
+                    meshes[current_index] = (current_vertices, current_triangles)
+                in_piece = False
+
+    return meshes
+
+
+def blender_executable() -> Path | None:
+    found = shutil.which("blender")
+    if found:
+        return Path(found)
+    roots = [
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+        str(Path.home() / "AppData" / "Local" / "Programs"),
+    ]
+    candidates: list[Path] = []
+    for root_text in roots:
+        if not root_text:
+            continue
+        root = Path(root_text)
+        candidates.extend(root.glob("Blender Foundation/Blender*/blender.exe"))
+        candidates.extend(root.glob("Blender*/blender.exe"))
+    return sorted(candidates, reverse=True)[0] if candidates else None
+
+
+def write_blender_materials(mtl_path: Path) -> None:
+    mtl_path.write_text(
+        "\n".join(
+            [
+                "newmtl escape_gray",
+                "Kd 0.70 0.76 0.84",
+                "Ks 0.25 0.25 0.25",
+                "",
+                "newmtl smoke_yellow",
+                "Kd 1.00 0.82 0.08",
+                "",
+                "newmtl outlet_green",
+                "Kd 0.13 0.77 0.37",
+                "",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def ats_to_blender(point: tuple[float, float, float]) -> tuple[float, float, float]:
+    return (point[0], point[2], point[1])
+
+
+def write_obj_marker(
+    fh,
+    name: str,
+    point: tuple[float, float, float],
+    size: float,
+    material: str,
+    next_index: int,
+) -> int:
+    x_value, y_value, z_value = ats_to_blender(point)
+    corners = [
+        (x_value - size, y_value - size, z_value - size),
+        (x_value + size, y_value - size, z_value - size),
+        (x_value + size, y_value + size, z_value - size),
+        (x_value - size, y_value + size, z_value - size),
+        (x_value - size, y_value - size, z_value + size),
+        (x_value + size, y_value - size, z_value + size),
+        (x_value + size, y_value + size, z_value + size),
+        (x_value - size, y_value + size, z_value + size),
+    ]
+    fh.write(f"\no {name}\nusemtl {material}\n")
+    for corner in corners:
+        fh.write(f"v {corner[0]:.6f} {corner[1]:.6f} {corner[2]:.6f}\n")
+    faces = [(1, 2, 3, 4), (5, 8, 7, 6), (1, 5, 6, 2), (2, 6, 7, 3), (3, 7, 8, 4), (4, 8, 5, 1)]
+    for face in faces:
+        fh.write("f " + " ".join(str(next_index + index - 1) for index in face) + "\n")
+    return next_index + len(corners)
+
+
+def export_pim_part_to_obj(
+    pim_path: Path,
+    part_identity: str,
+    obj_path: Path,
+    smoke_position: tuple[float, float, float],
+    outlet_position: tuple[float, float, float],
+    max_triangles: int = 140000,
+) -> tuple[int, int]:
+    text = pim_path.read_text(encoding="utf-8", errors="ignore")
+    part_pieces = parse_part_pieces(text)
+    pieces = part_pieces.get(part_identity)
+    if not pieces:
+        raise ToolError(f"No encontre la pieza {part_identity} dentro del modelo convertido.")
+    meshes = parse_piece_meshes(pim_path, set(pieces))
+    if not meshes:
+        raise ToolError("No pude leer la malla del escape para Blender.")
+
+    total_triangles = sum(len(triangles) for _vertices, triangles in meshes.values())
+    triangle_step = max(1, total_triangles // max_triangles) if total_triangles > max_triangles else 1
+    obj_path.parent.mkdir(parents=True, exist_ok=True)
+    write_blender_materials(obj_path.with_suffix(".mtl"))
+
+    exported_vertices = 0
+    exported_faces = 0
+    next_index = 1
+    with obj_path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(f"mtllib {obj_path.with_suffix('.mtl').name}\n")
+        fh.write("# Exportado por PM Smoke Locator Studio\n")
+        fh.write("# En Blender: X queda igual, Z es adelante/atras, altura ATS Y se muestra como Z vertical.\n")
+        fh.write(f"o {safe_name(part_identity)}\nusemtl escape_gray\n")
+        for piece, (vertices, triangles) in meshes.items():
+            selected_triangles = triangles[::triangle_step] if triangles else []
+            used_indices = sorted({index for triangle in selected_triangles for index in triangle})
+            if not used_indices:
+                used_indices = list(range(0, len(vertices), max(1, len(vertices) // 2500)))
+            index_map: dict[int, int] = {}
+            fh.write(f"g piece_{piece}\n")
+            for local_index in used_indices:
+                if local_index >= len(vertices):
+                    continue
+                index_map[local_index] = next_index
+                x_value, y_value, z_value = ats_to_blender(vertices[local_index])
+                fh.write(f"v {x_value:.6f} {y_value:.6f} {z_value:.6f}\n")
+                next_index += 1
+                exported_vertices += 1
+            for triangle in selected_triangles:
+                if all(index in index_map for index in triangle):
+                    fh.write(f"f {index_map[triangle[0]]} {index_map[triangle[1]]} {index_map[triangle[2]]}\n")
+                    exported_faces += 1
+            if not selected_triangles and index_map:
+                fh.write("p " + " ".join(str(value) for value in index_map.values()) + "\n")
+        next_index = write_obj_marker(fh, "PM_humo_actual", smoke_position, 0.045, "smoke_yellow", next_index)
+        write_obj_marker(fh, "PM_boca_detectada", outlet_position, 0.035, "outlet_green", next_index)
+    return exported_vertices, exported_faces
+
+
+def export_candidate_to_blender_obj(
+    mod_path: Path,
+    candidate: LocatorCandidate,
+    smoke_position: tuple[float, float, float],
+    outlet_position: tuple[float, float, float],
+    log: LogFn = print,
+) -> Path:
+    if not CONVERTER_PIX.exists():
+        raise ToolError(f"Missing converter: {CONVERTER_PIX}")
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    extract_dir = WORK / f"blender_extract_{safe_name(mod_path.stem)}_{stamp}"
+    mid_dir = WORK / f"blender_mid_{safe_name(mod_path.stem)}_{stamp}"
+    try:
+        extract_mod(mod_path, extract_dir, log)
+        log(f"Convirtiendo para Blender: {candidate.model_no_ext}")
+        run_command([CONVERTER_PIX, "-b", extract_dir, "-e", mid_dir, "-m", candidate.model_no_ext], log=log)
+        pim_path = mid_dir / Path(candidate.pim_rel)
+        if not pim_path.exists():
+            fallback = list(mid_dir.rglob(Path(candidate.pim_rel).name))
+            if fallback:
+                pim_path = fallback[0]
+        if not pim_path.exists():
+            raise ToolError("No encontre el .pim convertido para exportar a Blender.")
+        part_identity = candidate.key.split("|")[1] if "|" in candidate.key else f"{candidate.part_name}#1"
+        obj_name = f"{safe_name(mod_path.stem)}_{safe_name(candidate.part_name)}_{candidate.ordinal}_{stamp}.obj"
+        obj_path = BLENDER_EXPORTS / obj_name
+        vertices, faces = export_pim_part_to_obj(pim_path, part_identity, obj_path, smoke_position, outlet_position)
+        log(f"OBJ Blender creado: {obj_path}")
+        log(f"  Vertices: {vertices} | Caras: {faces}")
+        return obj_path
+    finally:
+        cleanup_paths([extract_dir, mid_dir], "always", True, log)
+
+
+def open_obj_in_blender(obj_path: Path) -> bool:
+    blender = blender_executable()
+    if blender:
+        subprocess.Popen([str(blender), str(obj_path)], close_fds=True)
+        return True
+    if os.name == "nt":
+        os.startfile(str(obj_path.parent))  # type: ignore[attr-defined]
+    return False
 
 
 def parse_locator_blocks(text: str) -> tuple[list[tuple[int, int, str]], dict[int, str]]:
@@ -2008,6 +2271,9 @@ class StudioApp:
         )
         view_combo.pack(side="left", padx=(10, 0))
         ttk.Button(view_controls, text="Reset 3D", command=lambda: reset_3d()).pack(side="left", padx=(8, 0))
+        ttk.Button(view_controls, text="Abrir Blender", command=lambda: open_selected_in_blender()).pack(
+            side="left", padx=(8, 0)
+        )
         ttk.Checkbutton(view_controls, text="Zoom boca", variable=zoom_var, command=lambda: draw()).pack(
             side="left", padx=(10, 0)
         )
@@ -2615,6 +2881,44 @@ class StudioApp:
             active = sum(1 for item in state.values() if item["enabled"])
             self._log(f"Editor locators guardado: {active}/{len(state)} activos para {Path(mod_source).name}")
             win.destroy()
+
+        def open_selected_in_blender() -> None:
+            if not apply_selected():
+                return
+            key = selected_key.get()
+            if key not in state:
+                return
+            item = state[key]
+            candidate = item["candidate"]
+            position = item["position"]
+            assert isinstance(candidate, LocatorCandidate)
+            assert isinstance(position, list)
+            smoke_position = (float(position[0]), float(position[1]), float(position[2]))
+
+            def work() -> None:
+                try:
+                    obj_path = export_candidate_to_blender_obj(
+                        Path(mod_source),
+                        candidate,
+                        smoke_position,
+                        candidate.outlet_position,
+                        self._thread_log,
+                    )
+                    opened = open_obj_in_blender(obj_path)
+                    if opened:
+                        self.queue.put(("done", f"Modelo abierto en Blender:\n{obj_path}"))
+                    else:
+                        self.queue.put(
+                            (
+                                "done",
+                                "No encontre Blender instalado o en PATH.\n"
+                                f"Deje el OBJ listo aqui:\n{obj_path}",
+                            )
+                        )
+                except Exception as exc:
+                    self.queue.put(("error", str(exc)))
+
+            self._run_worker(work)
 
         def on_select(_event: object) -> None:
             selection = tree.selection()
