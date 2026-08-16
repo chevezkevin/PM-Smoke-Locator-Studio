@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.7"
+APP_VERSION = "0.3.8"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -103,6 +103,12 @@ SMOKE_PROFILE_SCALES = {
     "Fuerte": 1.25,
     "Pesado": 1.5,
 }
+SMOKE_DIRECTION_ROTATIONS = {
+    "Arriba": (0.0, 0.0, 0.0, 1.0),
+    "Original PM": (0.0, 0.0, 1.0, 0.0),
+    "Lateral A": (0.70710677, 0.0, 0.0, 0.70710677),
+    "Lateral B": (-0.70710677, 0.0, 0.0, 0.70710677),
+}
 CLEANUP_MODES = {
     "Al terminar bien": "success",
     "Siempre": "always",
@@ -134,6 +140,7 @@ class LocatorCandidate:
 class LocatorEdit:
     enabled: bool
     position: tuple[float, float, float]
+    rotation: tuple[float, float, float, float] | None = None
 
 
 @dataclass
@@ -590,6 +597,7 @@ def patch_pim_with_smoke(
     skip_part_names: set[str] | None = None,
     locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
     smoke_scale: float = 1.0,
+    smoke_rotation: tuple[float, float, float, float] = SMOKE_DIRECTION_ROTATIONS["Arriba"],
     locator_edits: dict[str, LocatorEdit] | None = None,
 ) -> tuple[int, int, int, list[str]]:
     text = pim_path.read_text(encoding="utf-8", errors="ignore")
@@ -642,6 +650,7 @@ def patch_pim_with_smoke(
                 if edit and not edit.enabled:
                     continue
                 position = edit.position if edit else apply_offset(position, locator_offset)
+                rotation = edit.rotation if edit and edit.rotation else smoke_rotation
                 index = next_locator
                 next_locator += 1
                 added += 1
@@ -654,7 +663,7 @@ def patch_pim_with_smoke(
                             '     Hookup: "model.particle.smoke_new"',
                             f"     Index: {index}",
                             "     Position: ( " + "  ".join(write_float_token(value) for value in position) + " )",
-                            "     Rotation: ( &248d3132  &00000000  &3f800000  &00000000 )",
+                            "     Rotation: ( " + "  ".join(write_float_token(value) for value in rotation) + " )",
                             "     Scale: ( " + "  ".join(write_float_token(smoke_scale) for _ in range(3)) + " )",
                             "}",
                         ]
@@ -1109,6 +1118,7 @@ def build_smoke_patch(
     icon_path: Path | None = None,
     locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
     smoke_scale: float = 1.0,
+    smoke_rotation: tuple[float, float, float, float] = SMOKE_DIRECTION_ROTATIONS["Arriba"],
     locator_edits: dict[str, LocatorEdit] | None = None,
     cleanup_mode: str = "success",
     diagnostic: bool = False,
@@ -1163,6 +1173,7 @@ def build_smoke_patch(
                 skip_part_names=skip_parts,
                 locator_offset=locator_offset,
                 smoke_scale=smoke_scale,
+                smoke_rotation=smoke_rotation,
                 locator_edits=locator_edits,
             )
             locator_count += added
@@ -1271,6 +1282,7 @@ class StudioApp:
         self.smoke_mod = tk.StringVar(value=str(DEFAULT_SMOKE_MOD))
         self.icon_path = tk.StringVar()
         self.smoke_profile = tk.StringVar(value="Actual")
+        self.smoke_direction = tk.StringVar(value="Arriba")
         self.offset_x = tk.StringVar(value="0.00")
         self.offset_y = tk.StringVar(value="0.00")
         self.offset_z = tk.StringVar(value="0.00")
@@ -1384,6 +1396,14 @@ class StudioApp:
             state="readonly",
         ).pack(side="left", padx=(8, 18))
         ttk.Checkbutton(options_panel, text="Modo diagnostico", variable=self.diagnostic).pack(side="left")
+        ttk.Label(options_panel, text="Direccion humo", style="Card.TLabel").pack(side="left", padx=(18, 0))
+        ttk.Combobox(
+            options_panel,
+            textvariable=self.smoke_direction,
+            values=list(SMOKE_DIRECTION_ROTATIONS),
+            width=14,
+            state="readonly",
+        ).pack(side="left", padx=(8, 0))
 
         modes = ttk.Frame(panel, style="Panel.TFrame")
         modes.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(12, 4))
@@ -1480,6 +1500,9 @@ class StudioApp:
     def _smoke_scale(self) -> float:
         return SMOKE_PROFILE_SCALES.get(self.smoke_profile.get(), 1.0)
 
+    def _smoke_rotation(self) -> tuple[float, float, float, float]:
+        return SMOKE_DIRECTION_ROTATIONS.get(self.smoke_direction.get(), SMOKE_DIRECTION_ROTATIONS["Arriba"])
+
     def _choose_mod(self) -> None:
         paths = self.filedialog.askopenfilenames(
             title="Seleccionar mod(s) de camion",
@@ -1562,6 +1585,7 @@ class StudioApp:
         install_label = "si" if self.install.get() else "no"
         profile = self.smoke_profile.get()
         smoke_scale = self._smoke_scale()
+        smoke_direction = self.smoke_direction.get()
         cleanup = self.cleanup_label.get()
 
         def work() -> None:
@@ -1574,6 +1598,7 @@ class StudioApp:
                 self._thread_log(f"  PM Smoke principal: {smoke}")
                 self._thread_log(f"  Modo: {mode_label} | Copiar: {install_label}")
                 self._thread_log(f"  Nivel: {profile} | escala {smoke_scale}")
+                self._thread_log(f"  Direccion humo: {smoke_direction}")
                 self._thread_log(f"  Offset X/Y/Z: {locator_offset[0]} / {locator_offset[1]} / {locator_offset[2]}")
                 self._thread_log(f"  Auto-limpieza: {cleanup}")
                 self._thread_log(f"  Espacio libre: {format_gb(free)} de {format_gb(total)}")
@@ -2025,6 +2050,7 @@ class StudioApp:
         if locator_offset is None:
             return
         smoke_scale = self._smoke_scale()
+        smoke_rotation = self._smoke_rotation()
 
         def work() -> None:
             try:
@@ -2040,6 +2066,7 @@ class StudioApp:
                         icon_path=icon,
                         locator_offset=locator_offset,
                         smoke_scale=smoke_scale,
+                        smoke_rotation=smoke_rotation,
                         locator_edits=self.locator_edits if str(mod.resolve()) == self.locator_editor_source else None,
                         cleanup_mode=self._cleanup_mode(),
                         diagnostic=self.diagnostic.get(),
@@ -2121,6 +2148,7 @@ def main() -> int:
     parser.add_argument("--offset-z", type=float, default=0.0, help="Manual Z offset for generated locators")
     parser.add_argument("--smoke-profile", choices=list(SMOKE_PROFILE_SCALES), default="Actual")
     parser.add_argument("--smoke-scale", type=float, help="Manual smoke locator scale; overrides --smoke-profile")
+    parser.add_argument("--smoke-direction", choices=list(SMOKE_DIRECTION_ROTATIONS), default="Arriba")
     parser.add_argument("--cleanup-mode", choices=["success", "always", "never"], default="success")
     parser.add_argument("--diagnostic", action="store_true")
     args = parser.parse_args()
@@ -2128,6 +2156,7 @@ def main() -> int:
     smoke_mod = args.smoke_mod or default_smoke_mod(args.game)
     locator_offset = (args.offset_x, args.offset_y, args.offset_z)
     smoke_scale = args.smoke_scale if args.smoke_scale is not None else SMOKE_PROFILE_SCALES[args.smoke_profile]
+    smoke_rotation = SMOKE_DIRECTION_ROTATIONS[args.smoke_direction]
 
     if args.cli:
         if not args.mod:
@@ -2137,17 +2166,17 @@ def main() -> int:
                 analyze_mod(mod)
             else:
                 build_smoke_patch(
-                    mod,
-                    output_dir,
-                    args.mode,
-                    args.install,
-                    smoke_mod,
-                    args.icon,
-                    locator_offset,
-                    smoke_scale,
-                    None,
-                    args.cleanup_mode,
-                    args.diagnostic,
+                    mod_path=mod,
+                    output_dir=output_dir,
+                    mode=args.mode,
+                    install=args.install,
+                    smoke_mod=smoke_mod,
+                    icon_path=args.icon,
+                    locator_offset=locator_offset,
+                    smoke_scale=smoke_scale,
+                    smoke_rotation=smoke_rotation,
+                    cleanup_mode=args.cleanup_mode,
+                    diagnostic=args.diagnostic,
                 )
         return 0
 
