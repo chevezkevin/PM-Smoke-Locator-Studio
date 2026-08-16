@@ -26,6 +26,7 @@ Herramienta visual para crear locators `model.particle.smoke_new` en modelos de 
 - Corrige el bloqueo del editor visual al abrir locators detectados.
 - Limpia el ambiente de PyInstaller al actualizar y deja sin marcar abrir la app al terminar el setup.
 - Permite filtrar el editor visual por cada modelo de escape para ver sus puntos separados.
+- Dibuja una referencia gris del cuerpo del escape y agrega botones X/Y/Z para mover puntos con paso fino.
 
 ## Uso normal
 
@@ -56,7 +57,7 @@ dist\PMSmokeLocatorStudio.exe
 Tambien se crea una copia versionada:
 
 ```text
-dist\PMSmokeLocatorStudio_v0.3.3.exe
+dist\PMSmokeLocatorStudio_v0.3.4.exe
 ```
 
 ## Crear Setup
@@ -87,7 +88,7 @@ Para publicar actualizaciones:
 
 1. Sube el proyecto a GitHub.
 2. Cambia `APP_VERSION` y `installer.iss` a la nueva version.
-3. Crea un tag, por ejemplo `v0.3.3`.
+3. Crea un tag, por ejemplo `v0.3.4`.
 4. Sube el tag a GitHub.
 5. GitHub Actions compila el `.exe` y el `Setup`.
 6. La app instalada puede usar el boton `Actualizar` para descargar y abrir el Setup del ultimo Release.
@@ -95,8 +96,8 @@ Para publicar actualizaciones:
 Ejemplo:
 
 ```powershell
-git tag v0.3.3
-git push origin v0.3.3
+git tag v0.3.4
+git push origin v0.3.4
 ```
 
 ## Seguridad

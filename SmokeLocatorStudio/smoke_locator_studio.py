@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.3"
+APP_VERSION = "0.3.4"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -126,6 +126,7 @@ class LocatorCandidate:
     part_name: str
     ordinal: int
     position: tuple[float, float, float]
+    bounds: tuple[float, float, float, float, float, float]
 
 
 @dataclass(frozen=True)
@@ -494,6 +495,20 @@ def locator_positions_from_pieces(
     return smoke_positions(vertices)
 
 
+def locator_bounds_from_pieces(
+    piece_vertices: dict[int, list[tuple[float, float, float]]], pieces: list[int], locator_offset: LocatorOffset
+) -> tuple[float, float, float, float, float, float] | None:
+    vertices: list[tuple[float, float, float]] = []
+    for piece in pieces:
+        vertices.extend(piece_vertices.get(piece, []))
+    if not vertices:
+        return None
+    xs = [vertex[0] + locator_offset[0] for vertex in vertices]
+    ys = [vertex[1] + locator_offset[1] for vertex in vertices]
+    zs = [vertex[2] + locator_offset[2] for vertex in vertices]
+    return (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
+
+
 def inspect_pim_locator_candidates(
     pim_path: Path,
     pim_rel: str,
@@ -519,9 +534,18 @@ def inspect_pim_locator_candidates(
         pieces = [int(value) for value in pieces_match.group(1).split()] if pieces_match else []
         if not pieces:
             continue
+        part_bounds = locator_bounds_from_pieces(piece_vertices, pieces, locator_offset)
         positions = locator_positions_from_pieces(piece_vertices, pieces)
         for ordinal, position in enumerate(positions, 1):
             final_position = apply_offset(position, locator_offset)
+            candidate_bounds = part_bounds or (
+                final_position[0],
+                final_position[1],
+                final_position[2],
+                final_position[0],
+                final_position[1],
+                final_position[2],
+            )
             candidates.append(
                 LocatorCandidate(
                     key=locator_key(pim_rel, part_identity, ordinal),
@@ -530,6 +554,7 @@ def inspect_pim_locator_candidates(
                     part_name=part_name,
                     ordinal=ordinal,
                     position=final_position,
+                    bounds=candidate_bounds,
                 )
             )
     return candidates
@@ -1594,6 +1619,7 @@ class StudioApp:
         x_var = tk.StringVar()
         y_var = tk.StringVar()
         z_var = tk.StringVar()
+        step_var = tk.StringVar(value="0.02")
 
         outer = ttk.Frame(win, padding=14)
         outer.pack(fill="both", expand=True)
@@ -1648,7 +1674,7 @@ class StudioApp:
         right.columnconfigure(0, weight=1)
         canvas = tk.Canvas(right, height=300, bg="#0b0f13", highlightthickness=0)
         canvas.grid(row=0, column=0, columnspan=4, sticky="ew")
-        ttk.Label(right, text="Plano X/Z: izquierda-derecha y atras-adelante", style="Hint.TLabel").grid(
+        ttk.Label(right, text="Plano X/Z: gris = pieza de escape, punto = humo", style="Hint.TLabel").grid(
             row=1, column=0, columnspan=4, sticky="w", pady=(6, 16)
         )
 
@@ -1659,6 +1685,8 @@ class StudioApp:
         ttk.Entry(right, textvariable=y_var, width=10).grid(row=3, column=3, sticky="w", pady=(12, 4))
         ttk.Label(right, text="Z", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=4)
         ttk.Entry(right, textvariable=z_var, width=10).grid(row=4, column=1, sticky="w", pady=4)
+        ttk.Label(right, text="Paso", style="Card.TLabel").grid(row=4, column=2, sticky="w", pady=4, padx=(12, 0))
+        ttk.Entry(right, textvariable=step_var, width=10).grid(row=4, column=3, sticky="w", pady=4)
 
         def fmt(value: float) -> str:
             return f"{value:.3f}"
@@ -1709,26 +1737,43 @@ class StudioApp:
             canvas.create_text(12, 12, anchor="nw", fill="#93a4b5", text="X - izquierda   X + derecha")
             canvas.create_text(12, 32, anchor="nw", fill="#93a4b5", text="Z - atras        Z + adelante")
             points: list[tuple[str, float, float, bool]] = []
+            bounds_items: list[tuple[str, tuple[float, float, float, float, float, float]]] = []
             for key in visible_keys():
                 item = state[key]
+                candidate = item["candidate"]
                 position = item["position"]
+                assert isinstance(candidate, LocatorCandidate)
                 assert isinstance(position, list)
                 points.append((key, float(position[0]), float(position[2]), bool(item["enabled"])))
+                bounds_items.append((key, candidate.bounds))
             if not points:
                 canvas.create_text(width / 2, height / 2, fill="#93a4b5", text="No hay locators en este modelo")
                 return
-            xs = [point[1] for point in points] or [0.0]
-            zs = [point[2] for point in points] or [0.0]
+            xs = [point[1] for point in points]
+            zs = [point[2] for point in points]
+            for _key, bounds in bounds_items:
+                xs.extend([bounds[0], bounds[3]])
+                zs.extend([bounds[2], bounds[5]])
             min_x, max_x = min(xs), max(xs)
             min_z, max_z = min(zs), max(zs)
             pad = 42
             x_span = max(max_x - min_x, 0.1)
             z_span = max(max_z - min_z, 0.1)
-            canvas.create_line(pad, height - pad, width - pad, height - pad, fill="#334155")
-            canvas.create_line(pad, height - pad, pad, pad, fill="#334155")
-            for key, x_value, z_value, enabled in points:
+
+            def project(x_value: float, z_value: float) -> tuple[float, float]:
                 px = pad + (x_value - min_x) / x_span * (width - pad * 2)
                 py = height - pad - (z_value - min_z) / z_span * (height - pad * 2)
+                return px, py
+
+            canvas.create_line(pad, height - pad, width - pad, height - pad, fill="#334155")
+            canvas.create_line(pad, height - pad, pad, pad, fill="#334155")
+            for key, bounds in bounds_items:
+                left, top = project(bounds[0], bounds[5])
+                right_px, bottom = project(bounds[3], bounds[2])
+                outline = "#facc15" if key == selected_key.get() else "#475569"
+                canvas.create_rectangle(left, top, right_px, bottom, outline=outline, width=2 if key == selected_key.get() else 1)
+            for key, x_value, z_value, enabled in points:
+                px, py = project(x_value, z_value)
                 color = "#facc15" if key == selected_key.get() else ("#38bdf8" if enabled else "#64748b")
                 radius = 7 if key == selected_key.get() else 5
                 canvas.create_oval(px - radius, py - radius, px + radius, py + radius, fill=color, outline="")
@@ -1761,6 +1806,29 @@ class StudioApp:
             tree.item(key, values=row_values(key))
             draw()
             return True
+
+        def step_size() -> float | None:
+            try:
+                value = abs(float(step_var.get() or 0.02))
+            except ValueError:
+                self.messagebox.showerror(APP_TITLE, "El paso debe ser numero. Ejemplo: 0.02 o 0.05")
+                return None
+            return value or 0.02
+
+        def nudge(axis: int, direction: int) -> None:
+            step = step_size()
+            if step is None:
+                return
+            try:
+                values = [float(x_var.get()), float(y_var.get()), float(z_var.get())]
+            except ValueError:
+                self.messagebox.showerror(APP_TITLE, "X/Y/Z deben ser numeros. Ejemplo: 0.10 o -0.05")
+                return
+            values[axis] += step * direction
+            x_var.set(fmt(values[0]))
+            y_var.set(fmt(values[1]))
+            z_var.set(fmt(values[2]))
+            apply_selected()
 
         def model_changed(_event: object | None = None) -> None:
             if selected_key.get() and selected_key.get() in state:
@@ -1803,8 +1871,23 @@ class StudioApp:
         canvas.bind("<Configure>", lambda _event: draw())
         model_combo.bind("<<ComboboxSelected>>", model_changed)
 
+        nudge_buttons = ttk.Frame(right, style="Panel.TFrame")
+        nudge_buttons.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(14, 0))
+        ttk.Button(nudge_buttons, text="X -", command=lambda: nudge(0, -1)).pack(side="left")
+        ttk.Button(nudge_buttons, text="X +", command=lambda: nudge(0, 1)).pack(side="left", padx=(6, 0))
+        ttk.Button(nudge_buttons, text="Y -", command=lambda: nudge(1, -1)).pack(side="left", padx=(14, 0))
+        ttk.Button(nudge_buttons, text="Y +", command=lambda: nudge(1, 1)).pack(side="left", padx=(6, 0))
+        ttk.Button(nudge_buttons, text="Z -", command=lambda: nudge(2, -1)).pack(side="left", padx=(14, 0))
+        ttk.Button(nudge_buttons, text="Z +", command=lambda: nudge(2, 1)).pack(side="left", padx=(6, 0))
+
+        ttk.Label(
+            right,
+            text="Tip: usa 0.02 para detalle fino o 0.10 para mover mas rapido.",
+            style="Hint.TLabel",
+        ).grid(row=6, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
         buttons = ttk.Frame(right, style="Panel.TFrame")
-        buttons.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(18, 0))
+        buttons.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(18, 0))
         ttk.Button(buttons, text="Aplicar punto", command=apply_selected).pack(side="left")
         ttk.Button(buttons, text="Restablecer punto", command=reset_selected).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Guardar y cerrar", style="Accent.TButton", command=save_and_close).pack(side="right")
