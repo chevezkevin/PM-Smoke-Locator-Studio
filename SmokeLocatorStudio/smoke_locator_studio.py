@@ -21,7 +21,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.14"
+APP_VERSION = "0.3.15"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -648,7 +648,7 @@ def vertices_from_pieces(
 
 
 def sampled_vertices(
-    vertices: list[tuple[float, float, float]], limit: int = 1100
+    vertices: list[tuple[float, float, float]], limit: int = 4200
 ) -> tuple[tuple[float, float, float], ...]:
     if len(vertices) <= limit:
         return tuple(vertices)
@@ -2078,16 +2078,16 @@ class StudioApp:
                 draw()
 
         camera = {
-            "yaw": math.radians(-35.0),
-            "pitch": math.radians(22.0),
-            "scale": 1.0,
+            "yaw": math.radians(-18.0),
+            "pitch": math.radians(10.0),
+            "scale": 1.08,
             "drag": None,
         }
 
         def reset_3d() -> None:
-            camera["yaw"] = math.radians(-35.0)
-            camera["pitch"] = math.radians(22.0)
-            camera["scale"] = 1.0
+            camera["yaw"] = math.radians(-18.0)
+            camera["pitch"] = math.radians(10.0)
+            camera["scale"] = 1.08
             view_var.set("3D libre")
             draw()
 
@@ -2197,6 +2197,59 @@ class StudioApp:
                 x_rot, y_rot, depth = rotate_3d(point, center)
                 return width / 2 + x_rot * scale, height / 2 - y_rot * scale, depth
 
+            def convex_hull(points_2d: list[tuple[float, float]]) -> list[tuple[float, float]]:
+                unique = sorted(set((round(x_value, 1), round(y_value, 1)) for x_value, y_value in points_2d))
+                if len(unique) <= 2:
+                    return unique
+
+                def cross(
+                    origin: tuple[float, float], point_a: tuple[float, float], point_b: tuple[float, float]
+                ) -> float:
+                    return (point_a[0] - origin[0]) * (point_b[1] - origin[1]) - (
+                        point_a[1] - origin[1]
+                    ) * (point_b[0] - origin[0])
+
+                lower: list[tuple[float, float]] = []
+                for point in unique:
+                    while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0:
+                        lower.pop()
+                    lower.append(point)
+                upper: list[tuple[float, float]] = []
+                for point in reversed(unique):
+                    while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0:
+                        upper.pop()
+                    upper.append(point)
+                return lower[:-1] + upper[:-1]
+
+            def centerline(vertex_group: list[tuple[float, float, float]]) -> list[tuple[float, float, float]]:
+                if len(vertex_group) < 4:
+                    return vertex_group
+                spans = [
+                    max(vertex[index] for vertex in vertex_group) - min(vertex[index] for vertex in vertex_group)
+                    for index in range(3)
+                ]
+                axis = max(range(3), key=lambda index: spans[index])
+                min_axis = min(vertex[axis] for vertex in vertex_group)
+                max_axis = max(vertex[axis] for vertex in vertex_group)
+                axis_span = max(max_axis - min_axis, 0.01)
+                bucket_count = min(34, max(8, len(vertex_group) // 70))
+                buckets: list[list[tuple[float, float, float]]] = [[] for _ in range(bucket_count)]
+                for vertex in vertex_group:
+                    bucket = int((vertex[axis] - min_axis) / axis_span * (bucket_count - 1))
+                    buckets[max(0, min(bucket_count - 1, bucket))].append(vertex)
+                centers: list[tuple[float, float, float]] = []
+                for bucket in buckets:
+                    if not bucket:
+                        continue
+                    centers.append(
+                        (
+                            sum(vertex[0] for vertex in bucket) / len(bucket),
+                            sum(vertex[1] for vertex in bucket) / len(bucket),
+                            sum(vertex[2] for vertex in bucket) / len(bucket),
+                        )
+                    )
+                return centers
+
             canvas.create_text(
                 12,
                 12,
@@ -2216,29 +2269,44 @@ class StudioApp:
                 canvas.create_text(width - 12, 12, anchor="ne", fill="#93a4b5", text=note)
 
             model_draw = vertices
-            if len(model_draw) > 7000:
-                step = max(1, len(model_draw) // 7000)
+            if len(model_draw) > 12000:
+                step = max(1, len(model_draw) // 12000)
                 model_draw = model_draw[::step]
-            cells: dict[tuple[int, int, bool], tuple[float, int]] = {}
-            cell_size = 5
+            projected_by_key: dict[str, list[tuple[float, float, float]]] = {}
+            vertices_by_key: dict[str, list[tuple[float, float, float]]] = {}
             for key, vertex in model_draw:
                 px, py, depth = project_3d(vertex)
                 if px < -30 or py < -30 or px > width + 30 or py > height + 30:
                     continue
-                cell_x = int(px // cell_size)
-                cell_y = int(py // cell_size)
-                selected_cell = key == selected
-                cell_key = (cell_x, cell_y, selected_cell)
-                old_depth, old_count = cells.get(cell_key, (-9999.0, 0))
-                cells[cell_key] = (max(old_depth, depth), old_count + 1)
-            for (cell_x, cell_y, selected_cell), (_depth, count) in sorted(cells.items(), key=lambda item: item[1][0]):
-                x0 = cell_x * cell_size
-                y0 = cell_y * cell_size
-                if selected_cell:
-                    fill = "#94a3b8" if count > 3 else "#64748b"
-                else:
-                    fill = "#475569" if count > 3 else "#334155"
-                canvas.create_rectangle(x0, y0, x0 + cell_size + 1, y0 + cell_size + 1, fill=fill, outline="")
+                projected_by_key.setdefault(key, []).append((px, py, depth))
+                vertices_by_key.setdefault(key, []).append(vertex)
+            for key, projected in sorted(
+                projected_by_key.items(),
+                key=lambda item: sum(point[2] for point in item[1]) / max(len(item[1]), 1),
+            ):
+                selected_model = key == selected
+                hull = convex_hull([(px, py) for px, py, _depth in projected])
+                if len(hull) >= 3:
+                    polygon = [coord for point in hull for coord in point]
+                    canvas.create_polygon(
+                        polygon,
+                        fill="#18212b" if selected_model else "#101820",
+                        outline="#cbd5e1" if selected_model else "#475569",
+                        width=2 if selected_model else 1,
+                        smooth=True,
+                    )
+                draw_points = projected[:: max(1, len(projected) // 1800)]
+                for px, py, _depth in draw_points:
+                    color = "#d7dee8" if selected_model else "#64748b"
+                    canvas.create_line(px, py, px + 1, py, fill=color)
+                centers = centerline(vertices_by_key.get(key, []))
+                if len(centers) >= 2:
+                    line_points: list[float] = []
+                    for center_vertex in centers:
+                        px, py, _depth = project_3d(center_vertex)
+                        line_points.extend([px, py])
+                    canvas.create_line(line_points, fill="#334155", width=8, smooth=True)
+                    canvas.create_line(line_points, fill="#e2e8f0" if selected_model else "#64748b", width=3, smooth=True)
 
             for key, point in outlet_points:
                 px, py, _depth = project_3d(point)
