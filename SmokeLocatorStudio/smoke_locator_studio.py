@@ -21,7 +21,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.1.9"
+APP_VERSION = "0.2.0"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -50,7 +50,13 @@ CONVERSION_TOOLS_ZIP = TOOLS / "conversion_tools_2_21.zip"
 EXTRACTOR = TOOLS / "sk_extractor_gh" / "extractor.exe"
 SCS_EXTRACTOR = TOOLS / "scs_extractor_1_55" / "scs_extractor.exe"
 ATS_MOD_DIR = Path.home() / "Documents" / "American Truck Simulator" / "mod"
-DEFAULT_SMOKE_MOD = ATS_MOD_DIR / "PM_389_Smoke_All_Trucks_ATS_1.60.zip"
+ETS2_MOD_DIR = Path.home() / "Documents" / "Euro Truck Simulator 2" / "mod"
+DEFAULT_SMOKE_FILE = "PM_389_Smoke_All_Trucks_ATS_1.60.zip"
+DEFAULT_SMOKE_MOD = ATS_MOD_DIR / DEFAULT_SMOKE_FILE
+GAME_MOD_DIRS = {
+    "ats": ATS_MOD_DIR,
+    "ets2": ETS2_MOD_DIR,
+}
 EXHAUST_ACCESSORY_DIRS = {
     "exhaust",
     "cab_exhaust",
@@ -90,6 +96,7 @@ MODEL_EXCLUDE_HINTS = {
 
 
 LogFn = Callable[[str], None]
+LocatorOffset = tuple[float, float, float]
 
 
 @dataclass(frozen=True)
@@ -143,6 +150,14 @@ def latest_release() -> tuple[str, str]:
     if not tag:
         raise ToolError("GitHub no devolvio una version valida.")
     return tag, url
+
+
+def game_mod_dir(game: str) -> Path:
+    return GAME_MOD_DIRS.get(game.lower(), ATS_MOD_DIR)
+
+
+def default_smoke_mod(game: str) -> Path:
+    return game_mod_dir(game) / DEFAULT_SMOKE_FILE
 
 
 def run_command(args: list[str | Path], cwd: Path | None = None, log: LogFn | None = None) -> str:
@@ -355,7 +370,15 @@ def common_visible_parts_from_pit(pit_path: Path) -> set[str]:
     return common
 
 
-def patch_pim_with_smoke(pim_path: Path, skip_part_names: set[str] | None = None) -> tuple[int, int, int, list[str]]:
+def apply_offset(position: tuple[float, float, float], offset: LocatorOffset) -> tuple[float, float, float]:
+    return tuple(position[i] + offset[i] for i in range(3))  # type: ignore[return-value]
+
+
+def patch_pim_with_smoke(
+    pim_path: Path,
+    skip_part_names: set[str] | None = None,
+    locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
+) -> tuple[int, int, int, list[str]]:
     text = pim_path.read_text(encoding="utf-8", errors="ignore")
     piece_vertices = parse_piece_vertices(pim_path)
     locator_blocks, locators_by_index = parse_locator_blocks(text)
@@ -411,6 +434,7 @@ def patch_pim_with_smoke(pim_path: Path, skip_part_names: set[str] | None = None
         elif pieces:
             positions = locators_from_pieces(pieces)
             for position in positions:
+                position = apply_offset(position, locator_offset)
                 index = next_locator
                 next_locator += 1
                 added += 1
@@ -539,6 +563,41 @@ def score_exhaust_candidate(sii: Path, truck_def: Path, text: str, model: str) -
     return score
 
 
+def model_path_score(path_text: str) -> int:
+    model_lower = path_text.replace("\\", "/").lower()
+    model_stem = Path(model_lower).stem
+    score = 0
+
+    if any(hint in model_lower for hint in MODEL_EXCLUDE_HINTS):
+        score -= 10
+    if model_stem == "empty":
+        score -= 100
+
+    if "/upgrade/exhaust/" in model_lower or "/accessory/exhaust/" in model_lower:
+        score += 12
+    if "/exhaust/" in model_lower:
+        score += 8
+    if any(hint in model_stem for hint in EXHAUST_HINTS):
+        score += 6
+    if any(f"/{hint}" in model_lower or f"_{hint}" in model_lower for hint in EXHAUST_HINTS):
+        score += 4
+    return score
+
+
+def iter_model_refs(text: str) -> list[str]:
+    refs: list[str] = []
+    patterns = [
+        r'\b(?:exterior_model|model|model_path|model_desc):\s*"([^"]+\.pmd)"',
+        r'"([^"]+\.pmd)"',
+    ]
+    for pattern in patterns:
+        for model in re.findall(pattern, text, flags=re.I):
+            normalized = model.replace("\\", "/")
+            if normalized not in refs:
+                refs.append(normalized)
+    return refs
+
+
 def extract_mod(mod_path: Path, dest: Path, log: LogFn) -> None:
     log(f"Extrayendo mod: {mod_path}")
     dest.mkdir(parents=True, exist_ok=True)
@@ -559,21 +618,22 @@ def extract_mod(mod_path: Path, dest: Path, log: LogFn) -> None:
 
 
 def find_exhaust_models(extracted: Path) -> list[ExhaustModel]:
-    model_re = re.compile(r'exterior_model:\s*"([^"]+\.pmd)"', re.I)
     variant_re = re.compile(r"\bvariant:\s*([^\s]+)", re.I)
     look_re = re.compile(r"\blook:\s*([^\s]+)", re.I)
     found: dict[str, ExhaustModel] = {}
 
     truck_def = extracted / "def" / "vehicle" / "truck"
-    if not truck_def.exists():
-        return []
+    scan_root = truck_def if truck_def.exists() else extracted / "def"
+    if not scan_root.exists():
+        scan_root = extracted
 
-    for sii in truck_def.rglob("*.sii"):
+    for sii in scan_root.rglob("*.sii"):
         text = sii.read_text(encoding="utf-8", errors="ignore")
-        for model in model_re.findall(text):
+        for model in iter_model_refs(text):
             if Path(model).stem.lower() == "empty":
                 continue
-            if score_exhaust_candidate(sii, truck_def, text, model) < 7:
+            candidate_score = score_exhaust_candidate(sii, scan_root, text, model) + model_path_score(model)
+            if candidate_score < 7:
                 continue
             model_no_ext = model[:-4]
             pmd = extracted / model.lstrip("/").replace("/", os.sep)
@@ -583,6 +643,16 @@ def find_exhaust_models(extracted: Path) -> list[ExhaustModel]:
             variant = (variant_re.search(text).group(1) if variant_re.search(text) else "default")
             look = (look_re.search(text).group(1) if look_re.search(text) else "default")
             found.setdefault(model_no_ext, ExhaustModel(model_no_ext, sii, variant, look))
+
+    if not found:
+        for pmd in extracted.rglob("*.pmd"):
+            rel = "/" + pmd.relative_to(extracted).as_posix()
+            if model_path_score(rel) < 8:
+                continue
+            pmg = pmd.with_suffix(".pmg")
+            if not pmg.exists():
+                continue
+            found.setdefault(rel[:-4], ExhaustModel(rel[:-4], pmd, "auto", "auto"))
 
     return [found[key] for key in sorted(found)]
 
@@ -692,6 +762,7 @@ def build_smoke_patch(
     install: bool = False,
     smoke_mod: Path = DEFAULT_SMOKE_MOD,
     icon_path: Path | None = None,
+    locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
     log: LogFn = print,
 ) -> BuildResult:
     if not CONVERTER_PIX.exists():
@@ -723,11 +794,14 @@ def build_smoke_patch(
     if not pim_files:
         raise ToolError("La conversion no produjo archivos PIM.")
 
+    if locator_offset != (0.0, 0.0, 0.0):
+        log(f"Ajuste manual locators: X={locator_offset[0]} Y={locator_offset[1]} Z={locator_offset[2]}")
+
     log("Agregando locators smoke_new...")
     for pim in pim_files:
         pit = pim.with_suffix(".pit")
         skip_parts = common_visible_parts_from_pit(pit) if pit.exists() else set()
-        added, removed, total, pim_warnings = patch_pim_with_smoke(pim, skip_parts)
+        added, removed, total, pim_warnings = patch_pim_with_smoke(pim, skip_parts, locator_offset)
         locator_count += added
         removed_smoke += removed
         warnings.extend(f"{pim.name}: {warning}" for warning in pim_warnings)
@@ -817,10 +891,14 @@ class StudioApp:
         self.root.geometry("980x700")
         self.root.minsize(860, 620)
 
+        self.game = tk.StringVar(value="ats")
         self.mod_path = tk.StringVar()
-        self.output_dir = tk.StringVar(value=str(ATS_MOD_DIR))
+        self.output_dir = tk.StringVar(value=str(game_mod_dir("ats")))
         self.smoke_mod = tk.StringVar(value=str(DEFAULT_SMOKE_MOD))
         self.icon_path = tk.StringVar()
+        self.offset_x = tk.StringVar(value="0.00")
+        self.offset_y = tk.StringVar(value="0.00")
+        self.offset_z = tk.StringVar(value="0.00")
         self.mode = tk.StringVar(value="patch")
         self.install = tk.BooleanVar(value=True)
 
@@ -858,6 +936,16 @@ class StudioApp:
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(2, 14))
 
+        gamebar = ttk.Frame(outer, style="Panel.TFrame", padding=(16, 10))
+        gamebar.pack(fill="x", pady=(0, 10))
+        ttk.Label(gamebar, text="Juego", style="Card.TLabel").pack(side="left")
+        ttk.Radiobutton(gamebar, text="ATS", value="ats", variable=self.game, command=self._game_changed).pack(
+            side="left", padx=(16, 0)
+        )
+        ttk.Radiobutton(gamebar, text="ETS2", value="ets2", variable=self.game, command=self._game_changed).pack(
+            side="left", padx=(16, 0)
+        )
+
         panel = ttk.Frame(outer, style="Panel.TFrame", padding=16)
         panel.pack(fill="x")
         panel.columnconfigure(1, weight=1)
@@ -878,8 +966,18 @@ class StudioApp:
         ttk.Entry(panel, textvariable=self.icon_path).grid(row=3, column=1, sticky="ew", padx=8, pady=5)
         ttk.Button(panel, text="Buscar", command=self._choose_icon).grid(row=3, column=2, pady=5)
 
+        offset_panel = ttk.Frame(panel, style="Panel.TFrame")
+        offset_panel.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(8, 4))
+        ttk.Label(offset_panel, text="Ajuste manual locators", style="Card.TLabel").pack(side="left")
+        ttk.Label(offset_panel, text="X", style="Card.TLabel").pack(side="left", padx=(18, 4))
+        ttk.Entry(offset_panel, textvariable=self.offset_x, width=8).pack(side="left")
+        ttk.Label(offset_panel, text="Y", style="Card.TLabel").pack(side="left", padx=(12, 4))
+        ttk.Entry(offset_panel, textvariable=self.offset_y, width=8).pack(side="left")
+        ttk.Label(offset_panel, text="Z", style="Card.TLabel").pack(side="left", padx=(12, 4))
+        ttk.Entry(offset_panel, textvariable=self.offset_z, width=8).pack(side="left")
+
         modes = ttk.Frame(panel, style="Panel.TFrame")
-        modes.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(12, 4))
+        modes.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(12, 4))
         ttk.Radiobutton(modes, text="Crear parche seguro aparte", value="patch", variable=self.mode).pack(side="left")
         ttk.Radiobutton(modes, text="Crear mod completo nuevo", value="standalone", variable=self.mode).pack(
             side="left", padx=(18, 0)
@@ -912,11 +1010,35 @@ class StudioApp:
         self.log_text.pack(fill="both", expand=True)
         self._log("Listo. Escoge un mod .scs o .zip para empezar.")
 
+    def _selected_mod_dir(self) -> Path:
+        return game_mod_dir(self.game.get())
+
+    def _game_changed(self) -> None:
+        selected_dir = self._selected_mod_dir()
+        old_defaults = {game_mod_dir("ats"), game_mod_dir("ets2")}
+        output_text = self.output_dir.get().strip('" ')
+        current_output = Path(output_text) if output_text else None
+        if current_output is None or current_output in old_defaults:
+            self.output_dir.set(str(selected_dir))
+
+        smoke_text = self.smoke_mod.get().strip('" ')
+        current_smoke = Path(smoke_text) if smoke_text else None
+        if current_smoke is None or current_smoke in {default_smoke_mod("ats"), default_smoke_mod("ets2")}:
+            self.smoke_mod.set(str(default_smoke_mod(self.game.get())))
+        self._log(f"Juego seleccionado: {self.game.get().upper()} | carpeta mod: {selected_dir}")
+
+    def _locator_offset(self) -> LocatorOffset | None:
+        try:
+            return (float(self.offset_x.get() or 0), float(self.offset_y.get() or 0), float(self.offset_z.get() or 0))
+        except ValueError:
+            self.messagebox.showerror(APP_TITLE, "Los ajustes X/Y/Z deben ser numeros. Ejemplo: 0.10 o -0.05")
+            return None
+
     def _choose_mod(self) -> None:
         path = self.filedialog.askopenfilename(
             title="Seleccionar mod de camion",
-            filetypes=[("Mods ATS", "*.scs *.zip"), ("Todos", "*.*")],
-            initialdir=str(ATS_MOD_DIR if ATS_MOD_DIR.exists() else Path.home()),
+            filetypes=[("Mods ATS/ETS2", "*.scs *.zip"), ("Todos", "*.*")],
+            initialdir=str(self._selected_mod_dir() if self._selected_mod_dir().exists() else Path.home()),
         )
         if path:
             self.mod_path.set(path)
@@ -930,7 +1052,7 @@ class StudioApp:
         path = self.filedialog.askopenfilename(
             title="Seleccionar PM Smoke principal",
             filetypes=[("Zip/SCS", "*.zip *.scs"), ("Todos", "*.*")],
-            initialdir=str(ATS_MOD_DIR if ATS_MOD_DIR.exists() else Path.home()),
+            initialdir=str(self._selected_mod_dir() if self._selected_mod_dir().exists() else Path.home()),
         )
         if path:
             self.smoke_mod.set(path)
@@ -996,6 +1118,9 @@ class StudioApp:
         smoke = Path(self.smoke_mod.get().strip('" '))
         icon_text = self.icon_path.get().strip('" ')
         icon = Path(icon_text) if icon_text else None
+        locator_offset = self._locator_offset()
+        if locator_offset is None:
+            return
 
         def work() -> None:
             try:
@@ -1006,6 +1131,7 @@ class StudioApp:
                     install=self.install.get(),
                     smoke_mod=smoke,
                     icon_path=icon,
+                    locator_offset=locator_offset,
                     log=self._thread_log,
                 )
                 self.queue.put(("done", f"Creado: {result.output_zip}"))
@@ -1057,12 +1183,19 @@ def main() -> int:
     parser.add_argument("--cli", action="store_true", help="Run without GUI")
     parser.add_argument("--analyze", action="store_true", help="Analyze only")
     parser.add_argument("--mod", type=Path, help="Truck mod .scs/.zip")
-    parser.add_argument("--output", type=Path, default=ATS_MOD_DIR, help="Output folder")
+    parser.add_argument("--game", choices=["ats", "ets2"], default="ats", help="Game mod folder preset")
+    parser.add_argument("--output", type=Path, help="Output folder")
     parser.add_argument("--mode", choices=["patch", "standalone", "integrate"], default="patch")
     parser.add_argument("--install", action="store_true")
-    parser.add_argument("--smoke-mod", type=Path, default=DEFAULT_SMOKE_MOD)
+    parser.add_argument("--smoke-mod", type=Path)
     parser.add_argument("--icon", type=Path, help="Foto para convertir a mod_icon.jpg")
+    parser.add_argument("--offset-x", type=float, default=0.0, help="Manual X offset for generated locators")
+    parser.add_argument("--offset-y", type=float, default=0.0, help="Manual Y offset for generated locators")
+    parser.add_argument("--offset-z", type=float, default=0.0, help="Manual Z offset for generated locators")
     args = parser.parse_args()
+    output_dir = args.output or game_mod_dir(args.game)
+    smoke_mod = args.smoke_mod or default_smoke_mod(args.game)
+    locator_offset = (args.offset_x, args.offset_y, args.offset_z)
 
     if args.cli:
         if not args.mod:
@@ -1070,7 +1203,7 @@ def main() -> int:
         if args.analyze:
             analyze_mod(args.mod)
         else:
-            build_smoke_patch(args.mod, args.output, args.mode, args.install, args.smoke_mod, args.icon)
+            build_smoke_patch(args.mod, output_dir, args.mode, args.install, smoke_mod, args.icon, locator_offset)
         return 0
 
     app = StudioApp()
