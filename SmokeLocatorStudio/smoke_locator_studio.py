@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.9"
+APP_VERSION = "0.3.10"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -104,6 +104,7 @@ SMOKE_PROFILE_SCALES = {
     "Pesado": 1.5,
 }
 SMOKE_DIRECTION_ROTATIONS = {
+    "Original PM": (6.123234262925839e-17, 0.0, 1.0, 0.0),
     "Arriba": (0.70710677, -0.70710677, 0.0, 0.0),
     "Abajo": (0.70710677, 0.70710677, 0.0, 0.0),
     "Adelante": (1.0, 0.0, 0.0, 0.0),
@@ -111,7 +112,7 @@ SMOKE_DIRECTION_ROTATIONS = {
     "Izquierda": (0.70710677, 0.0, -0.70710677, 0.0),
     "Derecha": (0.70710677, 0.0, 0.70710677, 0.0),
 }
-SMOKE_DIRECTION_CHOICES = ["Automatico"] + list(SMOKE_DIRECTION_ROTATIONS)
+SMOKE_DIRECTION_CHOICES = list(SMOKE_DIRECTION_ROTATIONS) + ["Automatico"]
 CLEANUP_MODES = {
     "Al terminar bien": "success",
     "Siempre": "always",
@@ -567,7 +568,7 @@ def smoke_rotation_for_direction(
     direction: str, position: tuple[float, float, float], bounds: tuple[float, float, float, float, float, float]
 ) -> tuple[float, float, float, float]:
     selected = suggested_direction_from_bounds(position, bounds) if direction == "Automatico" else direction
-    return SMOKE_DIRECTION_ROTATIONS.get(selected, SMOKE_DIRECTION_ROTATIONS["Arriba"])
+    return SMOKE_DIRECTION_ROTATIONS.get(selected, SMOKE_DIRECTION_ROTATIONS["Original PM"])
 
 
 def direction_for_rotation(rotation: tuple[float, float, float, float] | None, fallback: str) -> str:
@@ -638,7 +639,7 @@ def patch_pim_with_smoke(
     skip_part_names: set[str] | None = None,
     locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
     smoke_scale: float = 1.0,
-    smoke_direction: str = "Automatico",
+    smoke_direction: str = "Original PM",
     locator_edits: dict[str, LocatorEdit] | None = None,
 ) -> tuple[int, int, int, list[str]]:
     text = pim_path.read_text(encoding="utf-8", errors="ignore")
@@ -1170,7 +1171,7 @@ def build_smoke_patch(
     icon_path: Path | None = None,
     locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
     smoke_scale: float = 1.0,
-    smoke_direction: str = "Automatico",
+    smoke_direction: str = "Original PM",
     locator_edits: dict[str, LocatorEdit] | None = None,
     cleanup_mode: str = "success",
     diagnostic: bool = False,
@@ -1334,7 +1335,7 @@ class StudioApp:
         self.smoke_mod = tk.StringVar(value=str(DEFAULT_SMOKE_MOD))
         self.icon_path = tk.StringVar()
         self.smoke_profile = tk.StringVar(value="Actual")
-        self.smoke_direction = tk.StringVar(value="Automatico")
+        self.smoke_direction = tk.StringVar(value="Original PM")
         self.offset_x = tk.StringVar(value="0.00")
         self.offset_y = tk.StringVar(value="0.00")
         self.offset_z = tk.StringVar(value="0.00")
@@ -1553,7 +1554,7 @@ class StudioApp:
         return SMOKE_PROFILE_SCALES.get(self.smoke_profile.get(), 1.0)
 
     def _smoke_direction(self) -> str:
-        return self.smoke_direction.get() if self.smoke_direction.get() in SMOKE_DIRECTION_CHOICES else "Automatico"
+        return self.smoke_direction.get() if self.smoke_direction.get() in SMOKE_DIRECTION_CHOICES else "Original PM"
 
     def _choose_mod(self) -> None:
         paths = self.filedialog.askopenfilenames(
@@ -1925,7 +1926,7 @@ class StudioApp:
             x_var.set(fmt(float(position[0])))
             y_var.set(fmt(float(position[1])))
             z_var.set(fmt(float(position[2])))
-            direction_var.set(str(item.get("direction") or "Arriba"))
+            direction_var.set(str(item.get("direction") or "Original PM"))
             if tree.selection() != (key,):
                 tree.selection_set(key)
             tree.see(key)
@@ -1942,7 +1943,7 @@ class StudioApp:
                 return False
             state[key]["enabled"] = bool(enabled_var.get())
             state[key]["position"] = position
-            selected_direction = direction_var.get() if direction_var.get() in SMOKE_DIRECTION_ROTATIONS else "Arriba"
+            selected_direction = direction_var.get() if direction_var.get() in SMOKE_DIRECTION_ROTATIONS else "Original PM"
             state[key]["direction"] = selected_direction
             state[key]["rotation"] = SMOKE_DIRECTION_ROTATIONS[selected_direction]
             tree.item(key, values=row_values(key))
@@ -1996,7 +1997,7 @@ class StudioApp:
             draw()
 
         def apply_direction_to_visible() -> None:
-            selected_direction = direction_var.get() if direction_var.get() in SMOKE_DIRECTION_ROTATIONS else "Arriba"
+            selected_direction = direction_var.get() if direction_var.get() in SMOKE_DIRECTION_ROTATIONS else "Original PM"
             for key in visible_keys():
                 state[key]["direction"] = selected_direction
                 state[key]["rotation"] = SMOKE_DIRECTION_ROTATIONS[selected_direction]
@@ -2017,8 +2018,9 @@ class StudioApp:
             assert isinstance(candidate, LocatorCandidate)
             state[key]["enabled"] = True
             state[key]["position"] = list(candidate.position)
-            state[key]["direction"] = candidate.suggested_direction
-            state[key]["rotation"] = SMOKE_DIRECTION_ROTATIONS[candidate.suggested_direction]
+            default_direction = candidate.suggested_direction if self._smoke_direction() == "Automatico" else self._smoke_direction()
+            state[key]["direction"] = default_direction
+            state[key]["rotation"] = SMOKE_DIRECTION_ROTATIONS[default_direction]
             load_selected(key)
             tree.item(key, values=row_values(key))
 
@@ -2239,7 +2241,7 @@ def main() -> int:
     parser.add_argument("--offset-z", type=float, default=0.0, help="Manual Z offset for generated locators")
     parser.add_argument("--smoke-profile", choices=list(SMOKE_PROFILE_SCALES), default="Actual")
     parser.add_argument("--smoke-scale", type=float, help="Manual smoke locator scale; overrides --smoke-profile")
-    parser.add_argument("--smoke-direction", choices=SMOKE_DIRECTION_CHOICES, default="Automatico")
+    parser.add_argument("--smoke-direction", choices=SMOKE_DIRECTION_CHOICES, default="Original PM")
     parser.add_argument("--cleanup-mode", choices=["success", "always", "never"], default="success")
     parser.add_argument("--diagnostic", action="store_true")
     args = parser.parse_args()
