@@ -1,5 +1,5 @@
 #define MyAppName "PM Smoke Locator Studio"
-#define MyAppVersion "0.2.1"
+#define MyAppVersion "0.2.2"
 #define MyAppPublisher "Chevez"
 #define MyAppExeName "PMSmokeLocatorStudio.exe"
 

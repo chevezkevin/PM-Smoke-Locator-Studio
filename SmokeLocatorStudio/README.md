@@ -17,6 +17,8 @@ Herramienta visual para crear locators `model.particle.smoke_new` en modelos de 
 - Usa un detector ampliado para encontrar escapes con nombres o carpetas menos comunes.
 - Descarga e inicia el `Setup` automaticamente desde GitHub Releases al usar `Actualizar`.
 - Limpia temporales de trabajo para evitar llenar el disco.
+- Muestra vista previa antes de crear, barra de espacio libre y permite importar varios mods a la vez.
+- Guarda diagnosticos cuando un mod falla.
 
 ## Uso normal
 
@@ -26,8 +28,9 @@ Herramienta visual para crear locators `model.particle.smoke_new` en modelos de 
 4. Presiona `Analizar`.
 5. Deja el nivel en `Actual` o escoge otro perfil.
 6. Si el humo necesita ajuste, cambia `X/Y/Z`.
-7. Presiona `Crear humo`.
-8. En el Mod Manager, pon el parche arriba del mod del camion.
+7. Revisa `Vista previa`.
+8. Presiona `Crear humo`.
+9. En el Mod Manager, pon el parche arriba del mod del camion.
 
 ## Crear EXE
 
@@ -46,7 +49,7 @@ dist\PMSmokeLocatorStudio.exe
 Tambien se crea una copia versionada:
 
 ```text
-dist\PMSmokeLocatorStudio_v0.2.1.exe
+dist\PMSmokeLocatorStudio_v0.2.2.exe
 ```
 
 ## Crear Setup
@@ -77,7 +80,7 @@ Para publicar actualizaciones:
 
 1. Sube el proyecto a GitHub.
 2. Cambia `APP_VERSION` y `installer.iss` a la nueva version.
-3. Crea un tag, por ejemplo `v0.2.1`.
+3. Crea un tag, por ejemplo `v0.2.2`.
 4. Sube el tag a GitHub.
 5. GitHub Actions compila el `.exe` y el `Setup`.
 6. La app instalada puede usar el boton `Actualizar` para descargar y abrir el Setup del ultimo Release.
@@ -85,8 +88,8 @@ Para publicar actualizaciones:
 Ejemplo:
 
 ```powershell
-git tag v0.2.1
-git push origin v0.2.1
+git tag v0.2.2
+git push origin v0.2.2
 ```
 
 ## Seguridad

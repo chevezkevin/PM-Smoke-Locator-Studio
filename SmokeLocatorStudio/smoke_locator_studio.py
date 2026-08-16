@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.2.2"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -102,6 +102,11 @@ SMOKE_PROFILE_SCALES = {
     "Suave": 0.75,
     "Fuerte": 1.25,
     "Pesado": 1.5,
+}
+CLEANUP_MODES = {
+    "Al terminar bien": "success",
+    "Siempre": "always",
+    "Nunca": "never",
 }
 
 
@@ -590,6 +595,59 @@ def cleanup_studio_work(log: LogFn = print) -> tuple[int, int]:
     return removed, freed
 
 
+def cleanup_paths(paths: list[Path], mode: str, success: bool, log: LogFn = print) -> None:
+    if mode == "never" or (mode == "success" and not success):
+        return
+    freed = 0
+    for path in paths:
+        if path.exists():
+            try:
+                freed += remove_tree_safe(path, WORK)
+            except Exception as exc:
+                log(f"No pude borrar temporal {path.name}: {exc}")
+    if freed:
+        log(f"Temporales del trabajo liberados: {freed / 1024 / 1024 / 1024:.2f} GB")
+
+
+def disk_usage_for(path: Path) -> tuple[int, int, int]:
+    probe = path if path.exists() else Path.home()
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    usage = shutil.disk_usage(probe)
+    return usage.total, usage.used, usage.free
+
+
+def format_gb(value: int) -> str:
+    return f"{value / 1024 / 1024 / 1024:.1f} GB"
+
+
+def write_diagnostic_report(
+    report_path: Path,
+    mod_path: Path,
+    error: Exception,
+    models: list[ExhaustModel],
+    temp_dirs: list[Path],
+) -> Path:
+    lines = [
+        "PM Smoke Locator Studio - Diagnostico",
+        f"Fecha: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Version: {APP_VERSION}",
+        f"Mod origen: {mod_path}",
+        f"Error: {error}",
+        f"Modelos detectados antes del error: {len(models)}",
+        "",
+        "Temporales:",
+    ]
+    lines.extend(f"- {path}" for path in temp_dirs)
+    if models:
+        lines.append("")
+        lines.append("Modelos:")
+        lines.extend(f"- {model.model_no_ext} | variant={model.variant} | def={model.source_def}" for model in models)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return report_path
+
+
 def safe_name(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
     return cleaned or "truck_mod"
@@ -832,6 +890,21 @@ def analyze_mod(mod_path: Path, log: LogFn = print) -> tuple[Path, list[ExhaustM
     return extract_dir, models, report
 
 
+def preview_mod(mod_path: Path, cleanup_mode: str, log: LogFn = print) -> tuple[int, Path]:
+    if not mod_path.exists():
+        raise ToolError(f"No existe el mod: {mod_path}")
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    extract_dir = WORK / f"studio_extract_{safe_name(mod_path.stem)}_{stamp}"
+    try:
+        extract_mod(mod_path, extract_dir, log)
+        models = find_exhaust_models(extract_dir)
+        report = WORK / f"studio_preview_{safe_name(mod_path.stem)}_{stamp}.txt"
+        make_report(report, mod_path, models, 0, 0, [], None)
+        return len(models), report
+    finally:
+        cleanup_paths([extract_dir], cleanup_mode, True, log)
+
+
 def build_smoke_patch(
     mod_path: Path,
     output_dir: Path,
@@ -841,6 +914,8 @@ def build_smoke_patch(
     icon_path: Path | None = None,
     locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
     smoke_scale: float = 1.0,
+    cleanup_mode: str = "success",
+    diagnostic: bool = False,
     log: LogFn = print,
 ) -> BuildResult:
     if not CONVERTER_PIX.exists():
@@ -854,109 +929,117 @@ def build_smoke_patch(
     mid_dir = WORK / f"studio_mid_{safe_name(mod_path.stem)}_{stamp}"
     convert_run = WORK / f"studio_convert_{safe_name(mod_path.stem)}_{stamp}"
     stage_dir = WORK / f"studio_stage_{safe_name(mod_path.stem)}_{stamp}"
+    temp_dirs = [extract_dir, mid_dir, convert_run, stage_dir]
+    models: list[ExhaustModel] = []
+    success = False
 
-    extract_mod(mod_path, extract_dir, log)
-    models = find_exhaust_models(extract_dir)
-    if not models:
-        raise ToolError("No encontre modelos de escape en ese mod.")
+    try:
+        extract_mod(mod_path, extract_dir, log)
+        models = find_exhaust_models(extract_dir)
+        if not models:
+            raise ToolError("No encontre modelos de escape en ese mod.")
 
-    log(f"Convirtiendo {len(models)} modelo(s) de escape...")
-    for index, model in enumerate(models, 1):
-        log(f"[{index}/{len(models)}] {model.model_no_ext}")
-        run_command([CONVERTER_PIX, "-b", extract_dir, "-e", mid_dir, "-m", model.model_no_ext], log=log)
+        log(f"Convirtiendo {len(models)} modelo(s) de escape...")
+        for index, model in enumerate(models, 1):
+            log(f"[{index}/{len(models)}] {model.model_no_ext}")
+            run_command([CONVERTER_PIX, "-b", extract_dir, "-e", mid_dir, "-m", model.model_no_ext], log=log)
 
-    locator_count = 0
-    removed_smoke = 0
-    warnings: list[str] = []
-    pim_files = list(mid_dir.rglob("*.pim"))
-    if not pim_files:
-        raise ToolError("La conversion no produjo archivos PIM.")
+        locator_count = 0
+        removed_smoke = 0
+        warnings: list[str] = []
+        pim_files = list(mid_dir.rglob("*.pim"))
+        if not pim_files:
+            raise ToolError("La conversion no produjo archivos PIM.")
 
-    if locator_offset != (0.0, 0.0, 0.0):
-        log(f"Ajuste manual locators: X={locator_offset[0]} Y={locator_offset[1]} Z={locator_offset[2]}")
-    if smoke_scale != 1.0:
-        log(f"Nivel de humo aplicado: escala {smoke_scale}")
+        if locator_offset != (0.0, 0.0, 0.0):
+            log(f"Ajuste manual locators: X={locator_offset[0]} Y={locator_offset[1]} Z={locator_offset[2]}")
+        if smoke_scale != 1.0:
+            log(f"Nivel de humo aplicado: escala {smoke_scale}")
 
-    log("Agregando locators smoke_new...")
-    for pim in pim_files:
-        pit = pim.with_suffix(".pit")
-        skip_parts = common_visible_parts_from_pit(pit) if pit.exists() else set()
-        added, removed, total, pim_warnings = patch_pim_with_smoke(pim, skip_parts, locator_offset, smoke_scale)
-        locator_count += added
-        removed_smoke += removed
-        warnings.extend(f"{pim.name}: {warning}" for warning in pim_warnings)
-        skip_note = f", base omitidas {len(skip_parts)}" if skip_parts else ""
-        log(f"  {pim.relative_to(mid_dir)}: +{added}, removidos {removed}, total {total}{skip_note}")
+        log("Agregando locators smoke_new...")
+        for pim in pim_files:
+            pit = pim.with_suffix(".pit")
+            skip_parts = common_visible_parts_from_pit(pit) if pit.exists() else set()
+            added, removed, total, pim_warnings = patch_pim_with_smoke(pim, skip_parts, locator_offset, smoke_scale)
+            locator_count += added
+            removed_smoke += removed
+            warnings.extend(f"{pim.name}: {warning}" for warning in pim_warnings)
+            skip_note = f", base omitidas {len(skip_parts)}" if skip_parts else ""
+            log(f"  {pim.relative_to(mid_dir)}: +{added}, removidos {removed}, total {total}{skip_note}")
 
-    shutil.unpack_archive(str(CONVERSION_TOOLS_ZIP), str(convert_run), "zip")
-    shutil.copytree(mid_dir, convert_run / "base", dirs_exist_ok=True)
-    log("Reconstruyendo PMD/PMG...")
-    run_command([convert_run / "convert.cmd"], cwd=convert_run, log=log)
+        shutil.unpack_archive(str(CONVERSION_TOOLS_ZIP), str(convert_run), "zip")
+        shutil.copytree(mid_dir, convert_run / "base", dirs_exist_ok=True)
+        log("Reconstruyendo PMD/PMG...")
+        run_command([convert_run / "convert.cmd"], cwd=convert_run, log=log)
 
-    cache = convert_run / "rsrc" / "base" / "@cache"
-    if not cache.exists():
-        raise ToolError("La conversion final no creo cache.")
+        cache = convert_run / "rsrc" / "base" / "@cache"
+        if not cache.exists():
+            raise ToolError("La conversion final no creo cache.")
 
-    if mode == "integrate":
-        if not smoke_mod.exists():
-            raise ToolError(f"No encontre el mod PM Smoke principal: {smoke_mod}")
-        log(f"Integrando dentro de: {smoke_mod}")
-        with zipfile.ZipFile(smoke_mod) as zf:
-            zf.extractall(stage_dir)
-        backup = smoke_mod.with_suffix(smoke_mod.suffix + f".bak_{stamp}")
-        shutil.copy2(smoke_mod, backup)
-        shutil.copytree(cache, stage_dir, dirs_exist_ok=True)
-        output_zip = output_dir / smoke_mod.name
-        zip_dir(stage_dir, output_zip)
-        if install:
-            copy_with_retries(output_zip, smoke_mod, log)
-            log(f"Backup creado: {backup}")
-    elif mode == "standalone":
-        if not smoke_mod.exists():
-            raise ToolError(f"No encontre el mod PM Smoke principal: {smoke_mod}")
-        log(f"Creando mod completo nuevo desde: {smoke_mod}")
-        with zipfile.ZipFile(smoke_mod) as zf:
-            zf.extractall(stage_dir)
-        shutil.copytree(cache, stage_dir, dirs_exist_ok=True)
-        display = f"PM Smoke Complete - {safe_name(mod_path.stem)}"
-        write_manifest(
-            stage_dir,
-            display,
-            "Standalone smoke mod generated by PM Smoke Locator Studio.\n"
-            "Includes PM Smoke base files and generated truck smoke locators.",
-            icon_source=icon_path,
-        )
-        output_zip = output_dir / f"PM_Smoke_{safe_name(mod_path.stem)}_Complete_{stamp}.zip"
-        zip_dir(stage_dir, output_zip)
-        if install:
-            copy_with_retries(output_zip, output_dir / output_zip.name, log)
-            log(f"Listo en carpeta de salida: {output_dir / output_zip.name}")
-    else:
-        shutil.copytree(cache, stage_dir, dirs_exist_ok=True)
-        display = f"PM Smoke Patch - {safe_name(mod_path.stem)}"
-        write_manifest(
-            stage_dir,
-            display,
-            "Smoke locator patch generated by PM Smoke Locator Studio.\n"
-            "Load above the truck mod and above PM Smoke base files.",
-            icon_source=icon_path,
-        )
-        output_zip = output_dir / f"PM_Smoke_{safe_name(mod_path.stem)}_Patch_{stamp}.zip"
-        zip_dir(stage_dir, output_zip)
-        if install:
-            copy_with_retries(output_zip, output_dir / output_zip.name, log)
-            log(f"Listo en carpeta de salida: {output_dir / output_zip.name}")
+        if mode == "integrate":
+            if not smoke_mod.exists():
+                raise ToolError(f"No encontre el mod PM Smoke principal: {smoke_mod}")
+            log(f"Integrando dentro de: {smoke_mod}")
+            with zipfile.ZipFile(smoke_mod) as zf:
+                zf.extractall(stage_dir)
+            backup = smoke_mod.with_suffix(smoke_mod.suffix + f".bak_{stamp}")
+            shutil.copy2(smoke_mod, backup)
+            shutil.copytree(cache, stage_dir, dirs_exist_ok=True)
+            output_zip = output_dir / smoke_mod.name
+            zip_dir(stage_dir, output_zip)
+            if install:
+                copy_with_retries(output_zip, smoke_mod, log)
+                log(f"Backup creado: {backup}")
+        elif mode == "standalone":
+            if not smoke_mod.exists():
+                raise ToolError(f"No encontre el mod PM Smoke principal: {smoke_mod}")
+            log(f"Creando mod completo nuevo desde: {smoke_mod}")
+            with zipfile.ZipFile(smoke_mod) as zf:
+                zf.extractall(stage_dir)
+            shutil.copytree(cache, stage_dir, dirs_exist_ok=True)
+            display = f"PM Smoke Complete - {safe_name(mod_path.stem)}"
+            write_manifest(
+                stage_dir,
+                display,
+                "Standalone smoke mod generated by PM Smoke Locator Studio.\n"
+                "Includes PM Smoke base files and generated truck smoke locators.",
+                icon_source=icon_path,
+            )
+            output_zip = output_dir / f"PM_Smoke_{safe_name(mod_path.stem)}_Complete_{stamp}.zip"
+            zip_dir(stage_dir, output_zip)
+            if install:
+                copy_with_retries(output_zip, output_dir / output_zip.name, log)
+                log(f"Listo en carpeta de salida: {output_dir / output_zip.name}")
+        else:
+            shutil.copytree(cache, stage_dir, dirs_exist_ok=True)
+            display = f"PM Smoke Patch - {safe_name(mod_path.stem)}"
+            write_manifest(
+                stage_dir,
+                display,
+                "Smoke locator patch generated by PM Smoke Locator Studio.\n"
+                "Load above the truck mod and above PM Smoke base files.",
+                icon_source=icon_path,
+            )
+            output_zip = output_dir / f"PM_Smoke_{safe_name(mod_path.stem)}_Patch_{stamp}.zip"
+            zip_dir(stage_dir, output_zip)
+            if install:
+                copy_with_retries(output_zip, output_dir / output_zip.name, log)
+                log(f"Listo en carpeta de salida: {output_dir / output_zip.name}")
 
-    report = output_dir / f"{output_zip.stem}_REPORT.txt"
-    make_report(report, mod_path, models, locator_count, removed_smoke, warnings, output_zip)
-    log(f"Salida: {output_zip}")
-    log(f"Reporte: {report}")
-    freed = 0
-    for temp_dir in (extract_dir, mid_dir, convert_run, stage_dir):
-        if temp_dir.exists():
-            freed += remove_tree_safe(temp_dir, WORK)
-    log(f"Temporales del trabajo liberados: {freed / 1024 / 1024 / 1024:.2f} GB")
-    return BuildResult(output_zip, report, len(models), locator_count, removed_smoke, warnings)
+        report = output_dir / f"{output_zip.stem}_REPORT.txt"
+        make_report(report, mod_path, models, locator_count, removed_smoke, warnings, output_zip)
+        log(f"Salida: {output_zip}")
+        log(f"Reporte: {report}")
+        success = True
+        return BuildResult(output_zip, report, len(models), locator_count, removed_smoke, warnings)
+    except Exception as exc:
+        if diagnostic:
+            diag = WORK / f"diagnostic_{safe_name(mod_path.stem)}_{stamp}.txt"
+            write_diagnostic_report(diag, mod_path, exc, models, temp_dirs)
+            log(f"Diagnostico guardado: {diag}")
+        raise
+    finally:
+        cleanup_paths(temp_dirs, cleanup_mode, success, log)
 
 
 class StudioApp:
@@ -973,8 +1056,8 @@ class StudioApp:
 
         self.root = tk.Tk()
         self.root.title(f"{APP_TITLE} {APP_VERSION}")
-        self.root.geometry("980x700")
-        self.root.minsize(860, 620)
+        self.root.geometry("1080x760")
+        self.root.minsize(940, 680)
 
         self.game = tk.StringVar(value="ats")
         self.mod_path = tk.StringVar()
@@ -987,6 +1070,9 @@ class StudioApp:
         self.offset_z = tk.StringVar(value="0.00")
         self.mode = tk.StringVar(value="patch")
         self.install = tk.BooleanVar(value=True)
+        self.diagnostic = tk.BooleanVar(value=True)
+        self.cleanup_label = tk.StringVar(value="Al terminar bien")
+        self.disk_text = tk.StringVar(value="Espacio libre: calculando...")
 
         self._style()
         self._build()
@@ -1070,8 +1156,20 @@ class StudioApp:
         ttk.Label(offset_panel, text="Z", style="Card.TLabel").pack(side="left", padx=(12, 4))
         ttk.Entry(offset_panel, textvariable=self.offset_z, width=8).pack(side="left")
 
+        options_panel = ttk.Frame(panel, style="Panel.TFrame")
+        options_panel.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(8, 4))
+        ttk.Label(options_panel, text="Auto-limpieza", style="Card.TLabel").pack(side="left")
+        ttk.Combobox(
+            options_panel,
+            textvariable=self.cleanup_label,
+            values=list(CLEANUP_MODES),
+            width=16,
+            state="readonly",
+        ).pack(side="left", padx=(8, 18))
+        ttk.Checkbutton(options_panel, text="Modo diagnostico", variable=self.diagnostic).pack(side="left")
+
         modes = ttk.Frame(panel, style="Panel.TFrame")
-        modes.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(12, 4))
+        modes.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(12, 4))
         ttk.Radiobutton(modes, text="Crear parche seguro aparte", value="patch", variable=self.mode).pack(side="left")
         ttk.Radiobutton(modes, text="Crear mod completo nuevo", value="standalone", variable=self.mode).pack(
             side="left", padx=(18, 0)
@@ -1084,10 +1182,17 @@ class StudioApp:
         actions = ttk.Frame(outer, padding=(0, 14, 0, 10))
         actions.pack(fill="x")
         ttk.Button(actions, text="Analizar", command=self._analyze).pack(side="left")
+        ttk.Button(actions, text="Vista previa", command=self._preview).pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="Crear humo", style="Accent.TButton", command=self._build_patch).pack(side="left", padx=10)
         ttk.Button(actions, text="Actualizar", command=self._check_updates).pack(side="left")
         ttk.Button(actions, text="Limpiar temporales", command=self._cleanup_work).pack(side="left", padx=10)
         ttk.Button(actions, text="Limpiar log", command=self._clear_log).pack(side="right")
+
+        disk_panel = ttk.Frame(outer)
+        disk_panel.pack(fill="x", pady=(0, 10))
+        ttk.Label(disk_panel, textvariable=self.disk_text, style="Muted.TLabel").pack(side="left")
+        self.disk_progress = ttk.Progressbar(disk_panel, mode="determinate", maximum=100)
+        self.disk_progress.pack(side="left", fill="x", expand=True, padx=(12, 0))
 
         self.progress = ttk.Progressbar(outer, mode="indeterminate")
         self.progress.pack(fill="x", pady=(0, 10))
@@ -1104,9 +1209,34 @@ class StudioApp:
         )
         self.log_text.pack(fill="both", expand=True)
         self._log("Listo. Escoge un mod .scs o .zip para empezar.")
+        self._refresh_disk()
 
     def _selected_mod_dir(self) -> Path:
         return game_mod_dir(self.game.get())
+
+    def _cleanup_mode(self) -> str:
+        return CLEANUP_MODES.get(self.cleanup_label.get(), "success")
+
+    def _selected_mods(self) -> list[Path] | None:
+        raw = self.mod_path.get().strip()
+        if not raw:
+            self.messagebox.showerror(APP_TITLE, "Selecciona uno o varios mods validos.")
+            return None
+        mods = [Path(part.strip().strip('"')) for part in raw.split(";") if part.strip()]
+        missing = [str(path) for path in mods if not path.exists()]
+        if missing:
+            self.messagebox.showerror(APP_TITLE, "No existe este mod:\n" + "\n".join(missing[:5]))
+            return None
+        return mods
+
+    def _refresh_disk(self) -> None:
+        try:
+            total, used, free = disk_usage_for(Path(self.output_dir.get().strip('" ') or Path.home()))
+            used_percent = int(used * 100 / total) if total else 0
+            self.disk_text.set(f"Espacio libre: {format_gb(free)} | usado {used_percent}%")
+            self.disk_progress["value"] = used_percent
+        except Exception as exc:
+            self.disk_text.set(f"Espacio libre: no disponible ({exc})")
 
     def _game_changed(self) -> None:
         selected_dir = self._selected_mod_dir()
@@ -1121,6 +1251,7 @@ class StudioApp:
         if current_smoke is None or current_smoke in {default_smoke_mod("ats"), default_smoke_mod("ets2")}:
             self.smoke_mod.set(str(default_smoke_mod(self.game.get())))
         self._log(f"Juego seleccionado: {self.game.get().upper()} | carpeta mod: {selected_dir}")
+        self._refresh_disk()
 
     def _locator_offset(self) -> LocatorOffset | None:
         try:
@@ -1133,18 +1264,19 @@ class StudioApp:
         return SMOKE_PROFILE_SCALES.get(self.smoke_profile.get(), 1.0)
 
     def _choose_mod(self) -> None:
-        path = self.filedialog.askopenfilename(
-            title="Seleccionar mod de camion",
+        paths = self.filedialog.askopenfilenames(
+            title="Seleccionar mod(s) de camion",
             filetypes=[("Mods ATS/ETS2", "*.scs *.zip"), ("Todos", "*.*")],
             initialdir=str(self._selected_mod_dir() if self._selected_mod_dir().exists() else Path.home()),
         )
-        if path:
-            self.mod_path.set(path)
+        if paths:
+            self.mod_path.set(";".join(paths))
 
     def _choose_output(self) -> None:
         path = self.filedialog.askdirectory(title="Seleccionar carpeta de salida", initialdir=self.output_dir.get())
         if path:
             self.output_dir.set(path)
+            self._refresh_disk()
 
     def _choose_smoke_mod(self) -> None:
         path = self.filedialog.askopenfilename(
@@ -1173,21 +1305,67 @@ class StudioApp:
         self.worker.start()
 
     def _validate_mod(self) -> Path | None:
-        mod = Path(self.mod_path.get().strip('" '))
+        mods = self._selected_mods()
+        if not mods:
+            return None
+        mod = mods[0]
         if not mod.exists():
             self.messagebox.showerror(APP_TITLE, "Selecciona un mod valido.")
             return None
         return mod
 
     def _analyze(self) -> None:
-        mod = self._validate_mod()
-        if not mod:
+        mods = self._selected_mods()
+        if not mods:
             return
 
         def work() -> None:
             try:
-                analyze_mod(mod, self._thread_log)
-                self.queue.put(("done", "Analisis terminado."))
+                for index, mod in enumerate(mods, 1):
+                    self._thread_log(f"Analisis [{index}/{len(mods)}]: {mod.name}")
+                    extract_dir, _models, _report = analyze_mod(mod, self._thread_log)
+                    if self._cleanup_mode() != "never":
+                        cleanup_paths([extract_dir], self._cleanup_mode(), True, self._thread_log)
+                self.queue.put(("done", f"Analisis terminado: {len(mods)} mod(s)."))
+            except Exception as exc:
+                self.queue.put(("error", str(exc)))
+
+        self._run_worker(work)
+
+    def _preview(self) -> None:
+        mods = self._selected_mods()
+        if not mods:
+            return
+        locator_offset = self._locator_offset()
+        if locator_offset is None:
+            return
+        output = Path(self.output_dir.get().strip('" ') or self._selected_mod_dir())
+        smoke = Path(self.smoke_mod.get().strip('" '))
+        mode_label = self.mode.get()
+        install_label = "si" if self.install.get() else "no"
+        profile = self.smoke_profile.get()
+        smoke_scale = self._smoke_scale()
+        cleanup = self.cleanup_label.get()
+
+        def work() -> None:
+            try:
+                total, used, free = disk_usage_for(output)
+                self._thread_log("Vista previa")
+                self._thread_log(f"  Juego: {self.game.get().upper()}")
+                self._thread_log(f"  Mods seleccionados: {len(mods)}")
+                self._thread_log(f"  Salida: {output}")
+                self._thread_log(f"  PM Smoke principal: {smoke}")
+                self._thread_log(f"  Modo: {mode_label} | Copiar: {install_label}")
+                self._thread_log(f"  Nivel: {profile} | escala {smoke_scale}")
+                self._thread_log(f"  Offset X/Y/Z: {locator_offset[0]} / {locator_offset[1]} / {locator_offset[2]}")
+                self._thread_log(f"  Auto-limpieza: {cleanup}")
+                self._thread_log(f"  Espacio libre: {format_gb(free)} de {format_gb(total)}")
+                for index, mod in enumerate(mods, 1):
+                    self._thread_log(f"Previsualizando [{index}/{len(mods)}]: {mod.name}")
+                    count, report = preview_mod(mod, self._cleanup_mode(), self._thread_log)
+                    self._thread_log(f"  Escapes detectados: {count}")
+                    self._thread_log(f"  Reporte preview: {report}")
+                self.queue.put(("done", "Vista previa terminada."))
             except Exception as exc:
                 self.queue.put(("error", str(exc)))
 
@@ -1220,10 +1398,21 @@ class StudioApp:
         self._run_worker(work)
 
     def _build_patch(self) -> None:
-        mod = self._validate_mod()
-        if not mod:
+        mods = self._selected_mods()
+        if not mods:
             return
         output = Path(self.output_dir.get().strip('" '))
+        try:
+            _total, _used, free = disk_usage_for(output)
+            self._refresh_disk()
+            if free < 10 * 1024 * 1024 * 1024:
+                if not self.messagebox.askyesno(
+                    APP_TITLE,
+                    f"Queda poco espacio libre ({format_gb(free)}). El proceso puede fallar.\n\nQuieres continuar?",
+                ):
+                    return
+        except Exception:
+            pass
         smoke = Path(self.smoke_mod.get().strip('" '))
         icon_text = self.icon_path.get().strip('" ')
         icon = Path(icon_text) if icon_text else None
@@ -1234,18 +1423,24 @@ class StudioApp:
 
         def work() -> None:
             try:
-                result = build_smoke_patch(
-                    mod_path=mod,
-                    output_dir=output,
-                    mode=self.mode.get(),
-                    install=self.install.get(),
-                    smoke_mod=smoke,
-                    icon_path=icon,
-                    locator_offset=locator_offset,
-                    smoke_scale=smoke_scale,
-                    log=self._thread_log,
-                )
-                self.queue.put(("done", f"Creado: {result.output_zip}"))
+                outputs: list[Path] = []
+                for index, mod in enumerate(mods, 1):
+                    self._thread_log(f"Creando humo [{index}/{len(mods)}]: {mod.name}")
+                    result = build_smoke_patch(
+                        mod_path=mod,
+                        output_dir=output,
+                        mode=self.mode.get(),
+                        install=self.install.get(),
+                        smoke_mod=smoke,
+                        icon_path=icon,
+                        locator_offset=locator_offset,
+                        smoke_scale=smoke_scale,
+                        cleanup_mode=self._cleanup_mode(),
+                        diagnostic=self.diagnostic.get(),
+                        log=self._thread_log,
+                    )
+                    outputs.append(result.output_zip)
+                self.queue.put(("done", f"Creado(s): {len(outputs)} mod(s). Ultima salida: {outputs[-1]}"))
             except Exception as exc:
                 self.queue.put(("error", str(exc)))
 
@@ -1270,6 +1465,7 @@ class StudioApp:
                 elif kind == "done":
                     self.progress.stop()
                     self._log(message)
+                    self._refresh_disk()
                     self.messagebox.showinfo(APP_TITLE, message)
                 elif kind == "update_ready":
                     self.progress.stop()
@@ -1282,6 +1478,7 @@ class StudioApp:
                 elif kind == "error":
                     self.progress.stop()
                     self._log("ERROR: " + message)
+                    self._refresh_disk()
                     self.messagebox.showerror(APP_TITLE, message)
         except queue.Empty:
             pass
@@ -1295,7 +1492,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=APP_TITLE)
     parser.add_argument("--cli", action="store_true", help="Run without GUI")
     parser.add_argument("--analyze", action="store_true", help="Analyze only")
-    parser.add_argument("--mod", type=Path, help="Truck mod .scs/.zip")
+    parser.add_argument("--mod", type=Path, nargs="+", help="Truck mod .scs/.zip")
     parser.add_argument("--game", choices=["ats", "ets2"], default="ats", help="Game mod folder preset")
     parser.add_argument("--output", type=Path, help="Output folder")
     parser.add_argument("--mode", choices=["patch", "standalone", "integrate"], default="patch")
@@ -1307,6 +1504,8 @@ def main() -> int:
     parser.add_argument("--offset-z", type=float, default=0.0, help="Manual Z offset for generated locators")
     parser.add_argument("--smoke-profile", choices=list(SMOKE_PROFILE_SCALES), default="Actual")
     parser.add_argument("--smoke-scale", type=float, help="Manual smoke locator scale; overrides --smoke-profile")
+    parser.add_argument("--cleanup-mode", choices=["success", "always", "never"], default="success")
+    parser.add_argument("--diagnostic", action="store_true")
     args = parser.parse_args()
     output_dir = args.output or game_mod_dir(args.game)
     smoke_mod = args.smoke_mod or default_smoke_mod(args.game)
@@ -1316,10 +1515,22 @@ def main() -> int:
     if args.cli:
         if not args.mod:
             parser.error("--mod is required with --cli")
-        if args.analyze:
-            analyze_mod(args.mod)
-        else:
-            build_smoke_patch(args.mod, output_dir, args.mode, args.install, smoke_mod, args.icon, locator_offset, smoke_scale)
+        for mod in args.mod:
+            if args.analyze:
+                analyze_mod(mod)
+            else:
+                build_smoke_patch(
+                    mod,
+                    output_dir,
+                    args.mode,
+                    args.install,
+                    smoke_mod,
+                    args.icon,
+                    locator_offset,
+                    smoke_scale,
+                    args.cleanup_mode,
+                    args.diagnostic,
+                )
         return 0
 
     app = StudioApp()
