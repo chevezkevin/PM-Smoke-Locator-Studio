@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -1702,7 +1702,8 @@ class StudioApp:
             x_var.set(fmt(float(position[0])))
             y_var.set(fmt(float(position[1])))
             z_var.set(fmt(float(position[2])))
-            tree.selection_set(key)
+            if tree.selection() != (key,):
+                tree.selection_set(key)
             tree.see(key)
             draw()
 
@@ -1750,7 +1751,7 @@ class StudioApp:
 
         def on_select(_event: object) -> None:
             selection = tree.selection()
-            if selection:
+            if selection and selection[0] != selected_key.get():
                 load_selected(selection[0])
 
         tree.bind("<<TreeviewSelect>>", on_select)
@@ -1874,8 +1875,12 @@ class StudioApp:
                     self.root.after(100, self.root.destroy)
                 elif kind == "locator_editor_ready":
                     self.progress.stop()
-                    mod_source, candidates = message
-                    self._show_locator_editor(str(mod_source), candidates)
+                    try:
+                        mod_source, candidates = message
+                        self._show_locator_editor(str(mod_source), candidates)
+                    except Exception as exc:
+                        self._log("ERROR: " + str(exc))
+                        self.messagebox.showerror(APP_TITLE, str(exc))
                 elif kind == "error":
                     self.progress.stop()
                     self._log("ERROR: " + str(message))
