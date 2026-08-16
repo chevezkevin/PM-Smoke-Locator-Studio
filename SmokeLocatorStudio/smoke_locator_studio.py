@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -230,6 +230,11 @@ def launch_update_setup(setup_path: Path) -> Path:
             [
                 "@echo off",
                 "timeout /t 2 /nobreak >nul",
+                "set PYINSTALLER_RESET_ENVIRONMENT=1",
+                "set _PYI_ARCHIVE_FILE=",
+                "set _PYI_PARENT_PROCESS_LEVEL=",
+                "set _PYI_APPLICATION_HOME_DIR=",
+                "set _PYI_SPLASH_IPC=",
                 f'start /wait "" "{setup_path}" /CURRENTUSER /CLOSEAPPLICATIONS /NORESTART /LOG="{setup_log}"',
             ]
         )
