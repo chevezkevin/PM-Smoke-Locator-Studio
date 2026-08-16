@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.6"
+APP_VERSION = "0.3.7"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -513,8 +513,9 @@ def locator_bounds_from_pieces(
 def outlet_from_position_and_bounds(
     position: tuple[float, float, float], bounds: tuple[float, float, float, float, float, float]
 ) -> tuple[float, float, float]:
-    min_x, _min_y, min_z, max_x, _max_y, max_z = bounds
+    min_x, _min_y, min_z, max_x, max_y, max_z = bounds
     x_value, y_value, z_value = position
+    y_outlet = max(y_value, max_y) + 0.06
     distances = {
         "x_min": abs(x_value - min_x),
         "x_max": abs(max_x - x_value),
@@ -523,12 +524,12 @@ def outlet_from_position_and_bounds(
     }
     nearest = min(distances, key=distances.get)
     if nearest == "x_min":
-        return (min_x, y_value, z_value)
+        return (min_x, y_outlet, z_value)
     if nearest == "x_max":
-        return (max_x, y_value, z_value)
+        return (max_x, y_outlet, z_value)
     if nearest == "z_min":
-        return (x_value, y_value, min_z)
-    return (x_value, y_value, max_z)
+        return (x_value, y_outlet, min_z)
+    return (x_value, y_outlet, max_z)
 
 
 def inspect_pim_locator_candidates(
@@ -1887,6 +1888,18 @@ class StudioApp:
             z_var.set(fmt(candidate.outlet_position[2]))
             apply_selected()
 
+        def move_visible_to_outlets() -> None:
+            keys = visible_keys()
+            for key in keys:
+                item = state[key]
+                candidate = item["candidate"]
+                assert isinstance(candidate, LocatorCandidate)
+                item["position"] = list(candidate.outlet_position)
+                tree.item(key, values=row_values(key))
+            if selected_key.get() in state:
+                load_selected(selected_key.get())
+            draw()
+
         def model_changed(_event: object | None = None) -> None:
             if selected_key.get() and selected_key.get() in state:
                 apply_selected()
@@ -1940,9 +1953,12 @@ class StudioApp:
         outlet_buttons = ttk.Frame(right, style="Panel.TFrame")
         outlet_buttons.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(10, 0))
         ttk.Button(outlet_buttons, text="Mover a salida sugerida", command=move_to_outlet).pack(side="left")
+        ttk.Button(outlet_buttons, text="Mover visibles a salida alta", command=move_visible_to_outlets).pack(
+            side="left", padx=(8, 0)
+        )
         ttk.Label(
             outlet_buttons,
-            text="Verde = extremo estimado de la boca del escape",
+            text="Verde = boca estimada con Y alto",
             style="Hint.TLabel",
         ).pack(side="left", padx=(12, 0))
 
