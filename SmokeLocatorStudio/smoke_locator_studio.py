@@ -13,7 +13,6 @@ import threading
 import time
 import urllib.error
 import urllib.request
-import webbrowser
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -42,6 +41,7 @@ def bundled_root() -> Path:
 ROOT = app_root()
 BUNDLE = bundled_root()
 WORK = (Path.home() / "Documents" / "PM Smoke Locator Studio" / "work") if getattr(sys, "frozen", False) else ROOT / "work"
+UPDATES = (Path.home() / "Documents" / "PM Smoke Locator Studio" / "updates") if getattr(sys, "frozen", False) else ROOT / "outputs" / "updates"
 TOOLS = BUNDLE / "work" / "tools"
 DEFAULT_ICON = BUNDLE / "SmokeLocatorStudio" / "assets" / "mod_icon.jpg"
 MOD_ICON_SIZE = (276, 162)
@@ -97,6 +97,12 @@ MODEL_EXCLUDE_HINTS = {
 
 LogFn = Callable[[str], None]
 LocatorOffset = tuple[float, float, float]
+SMOKE_PROFILE_SCALES = {
+    "Actual": 1.0,
+    "Suave": 0.75,
+    "Fuerte": 1.25,
+    "Pesado": 1.5,
+}
 
 
 @dataclass(frozen=True)
@@ -130,14 +136,14 @@ def parse_version(value: str) -> tuple[int, ...]:
     return tuple(parts or [0])
 
 
-def latest_release() -> tuple[str, str]:
+def fetch_latest_release() -> dict:
     request = urllib.request.Request(
         GITHUB_LATEST_API,
         headers={"Accept": "application/vnd.github+json", "User-Agent": f"{APP_TITLE}/{APP_VERSION}"},
     )
     try:
         with urllib.request.urlopen(request, timeout=8) as response:
-            data = json.loads(response.read().decode("utf-8"))
+            return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise ToolError("Todavia no hay Releases publicados en GitHub.") from exc
@@ -145,11 +151,53 @@ def latest_release() -> tuple[str, str]:
     except Exception as exc:
         raise ToolError(f"No pude revisar actualizaciones: {exc}") from exc
 
+
+def setup_asset_url(data: dict) -> str | None:
+    for asset in data.get("assets", []):
+        name = str(asset.get("name") or "")
+        if name.lower().startswith("pmsmokelocatorstudio_setup_") and name.lower().endswith(".exe"):
+            return str(asset.get("browser_download_url") or "")
+    return None
+
+
+def latest_release() -> tuple[str, str, str | None]:
+    data = fetch_latest_release()
     tag = str(data.get("tag_name") or "").strip()
     url = str(data.get("html_url") or GITHUB_RELEASES_URL)
     if not tag:
         raise ToolError("GitHub no devolvio una version valida.")
-    return tag, url
+    return tag, url, setup_asset_url(data)
+
+
+def download_update_setup(tag: str, setup_url: str, log: LogFn = print) -> Path:
+    if not setup_url:
+        raise ToolError("El Release nuevo no tiene un Setup .exe adjunto.")
+
+    UPDATES.mkdir(parents=True, exist_ok=True)
+    dest = UPDATES / f"PMSmokeLocatorStudio_Setup_{tag.lstrip('v')}.exe"
+    part = dest.with_suffix(dest.suffix + ".part")
+    request = urllib.request.Request(setup_url, headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}"})
+    log(f"Descargando actualizacion {tag}...")
+    with urllib.request.urlopen(request, timeout=30) as response, part.open("wb") as fh:
+        total = int(response.headers.get("Content-Length") or 0)
+        done = 0
+        next_report = 0
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            fh.write(chunk)
+            done += len(chunk)
+            if total:
+                percent = int(done * 100 / total)
+                if percent >= next_report:
+                    log(f"  descarga {percent}%")
+                    next_report += 10
+    if dest.exists():
+        dest.unlink()
+    part.replace(dest)
+    log(f"Setup descargado: {dest}")
+    return dest
 
 
 def game_mod_dir(game: str) -> Path:
@@ -378,6 +426,7 @@ def patch_pim_with_smoke(
     pim_path: Path,
     skip_part_names: set[str] | None = None,
     locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
+    smoke_scale: float = 1.0,
 ) -> tuple[int, int, int, list[str]]:
     text = pim_path.read_text(encoding="utf-8", errors="ignore")
     piece_vertices = parse_piece_vertices(pim_path)
@@ -448,7 +497,7 @@ def patch_pim_with_smoke(
                             f"     Index: {index}",
                             "     Position: ( " + "  ".join(write_float_token(value) for value in position) + " )",
                             "     Rotation: ( &248d3132  &00000000  &3f800000  &00000000 )",
-                            "     Scale: ( &3f800000  &3f800000  &3f800000 )",
+                            "     Scale: ( " + "  ".join(write_float_token(smoke_scale) for _ in range(3)) + " )",
                             "}",
                         ]
                     )
@@ -511,6 +560,34 @@ def copy_with_retries(src: Path, dest: Path, log: LogFn, attempts: int = 5) -> N
         "Windows tiene bloqueado el archivo de salida. "
         "Cierra ATS, Mod Downloader, Explorer preview o cualquier programa que lo este usando y prueba de nuevo."
     ) from last_error
+
+
+def remove_tree_safe(path: Path, root: Path) -> int:
+    root_resolved = root.resolve()
+    path_resolved = path.resolve()
+    if path_resolved == root_resolved or root_resolved not in path_resolved.parents:
+        raise ToolError(f"Ruta temporal insegura: {path_resolved}")
+
+    size = sum(file.stat().st_size for file in path_resolved.rglob("*") if file.is_file())
+    shutil.rmtree(path_resolved, ignore_errors=True)
+    return size
+
+
+def cleanup_studio_work(log: LogFn = print) -> tuple[int, int]:
+    WORK.mkdir(parents=True, exist_ok=True)
+    prefixes = ("studio_extract_", "studio_mid_", "studio_convert_", "studio_stage_")
+    removed = 0
+    freed = 0
+    for path in sorted(WORK.iterdir()):
+        if not path.is_dir() or not path.name.startswith(prefixes):
+            continue
+        try:
+            freed += remove_tree_safe(path, WORK)
+            removed += 1
+        except Exception as exc:
+            log(f"No pude borrar {path.name}: {exc}")
+    log(f"Temporales borrados: {removed} carpeta(s), {freed / 1024 / 1024 / 1024:.2f} GB liberados")
+    return removed, freed
 
 
 def safe_name(value: str) -> str:
@@ -763,6 +840,7 @@ def build_smoke_patch(
     smoke_mod: Path = DEFAULT_SMOKE_MOD,
     icon_path: Path | None = None,
     locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
+    smoke_scale: float = 1.0,
     log: LogFn = print,
 ) -> BuildResult:
     if not CONVERTER_PIX.exists():
@@ -796,12 +874,14 @@ def build_smoke_patch(
 
     if locator_offset != (0.0, 0.0, 0.0):
         log(f"Ajuste manual locators: X={locator_offset[0]} Y={locator_offset[1]} Z={locator_offset[2]}")
+    if smoke_scale != 1.0:
+        log(f"Nivel de humo aplicado: escala {smoke_scale}")
 
     log("Agregando locators smoke_new...")
     for pim in pim_files:
         pit = pim.with_suffix(".pit")
         skip_parts = common_visible_parts_from_pit(pit) if pit.exists() else set()
-        added, removed, total, pim_warnings = patch_pim_with_smoke(pim, skip_parts, locator_offset)
+        added, removed, total, pim_warnings = patch_pim_with_smoke(pim, skip_parts, locator_offset, smoke_scale)
         locator_count += added
         removed_smoke += removed
         warnings.extend(f"{pim.name}: {warning}" for warning in pim_warnings)
@@ -871,6 +951,11 @@ def build_smoke_patch(
     make_report(report, mod_path, models, locator_count, removed_smoke, warnings, output_zip)
     log(f"Salida: {output_zip}")
     log(f"Reporte: {report}")
+    freed = 0
+    for temp_dir in (extract_dir, mid_dir, convert_run, stage_dir):
+        if temp_dir.exists():
+            freed += remove_tree_safe(temp_dir, WORK)
+    log(f"Temporales del trabajo liberados: {freed / 1024 / 1024 / 1024:.2f} GB")
     return BuildResult(output_zip, report, len(models), locator_count, removed_smoke, warnings)
 
 
@@ -896,6 +981,7 @@ class StudioApp:
         self.output_dir = tk.StringVar(value=str(game_mod_dir("ats")))
         self.smoke_mod = tk.StringVar(value=str(DEFAULT_SMOKE_MOD))
         self.icon_path = tk.StringVar()
+        self.smoke_profile = tk.StringVar(value="Actual")
         self.offset_x = tk.StringVar(value="0.00")
         self.offset_y = tk.StringVar(value="0.00")
         self.offset_z = tk.StringVar(value="0.00")
@@ -968,6 +1054,14 @@ class StudioApp:
 
         offset_panel = ttk.Frame(panel, style="Panel.TFrame")
         offset_panel.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(8, 4))
+        ttk.Label(offset_panel, text="Nivel", style="Card.TLabel").pack(side="left")
+        ttk.Combobox(
+            offset_panel,
+            textvariable=self.smoke_profile,
+            values=list(SMOKE_PROFILE_SCALES),
+            width=10,
+            state="readonly",
+        ).pack(side="left", padx=(8, 18))
         ttk.Label(offset_panel, text="Ajuste manual locators", style="Card.TLabel").pack(side="left")
         ttk.Label(offset_panel, text="X", style="Card.TLabel").pack(side="left", padx=(18, 4))
         ttk.Entry(offset_panel, textvariable=self.offset_x, width=8).pack(side="left")
@@ -992,6 +1086,7 @@ class StudioApp:
         ttk.Button(actions, text="Analizar", command=self._analyze).pack(side="left")
         ttk.Button(actions, text="Crear humo", style="Accent.TButton", command=self._build_patch).pack(side="left", padx=10)
         ttk.Button(actions, text="Actualizar", command=self._check_updates).pack(side="left")
+        ttk.Button(actions, text="Limpiar temporales", command=self._cleanup_work).pack(side="left", padx=10)
         ttk.Button(actions, text="Limpiar log", command=self._clear_log).pack(side="right")
 
         self.progress = ttk.Progressbar(outer, mode="indeterminate")
@@ -1033,6 +1128,9 @@ class StudioApp:
         except ValueError:
             self.messagebox.showerror(APP_TITLE, "Los ajustes X/Y/Z deben ser numeros. Ejemplo: 0.10 o -0.05")
             return None
+
+    def _smoke_scale(self) -> float:
+        return SMOKE_PROFILE_SCALES.get(self.smoke_profile.get(), 1.0)
 
     def _choose_mod(self) -> None:
         path = self.filedialog.askopenfilename(
@@ -1098,13 +1196,24 @@ class StudioApp:
     def _check_updates(self) -> None:
         def work() -> None:
             try:
-                tag, url = latest_release()
+                tag, _url, setup_url = latest_release()
                 latest = parse_version(tag)
                 current = parse_version(APP_VERSION)
                 if latest > current:
-                    self.queue.put(("update", f"Hay una version nueva: {tag}|{url}"))
+                    setup_path = download_update_setup(tag, setup_url or "", self._thread_log)
+                    self.queue.put(("update_ready", f"{tag}|{setup_path}"))
                 else:
                     self.queue.put(("done", f"Ya tienes la ultima version: {APP_VERSION}"))
+            except Exception as exc:
+                self.queue.put(("error", str(exc)))
+
+        self._run_worker(work)
+
+    def _cleanup_work(self) -> None:
+        def work() -> None:
+            try:
+                removed, freed = cleanup_studio_work(self._thread_log)
+                self.queue.put(("done", f"Temporales borrados: {removed} carpeta(s), {freed / 1024 / 1024 / 1024:.2f} GB liberados"))
             except Exception as exc:
                 self.queue.put(("error", str(exc)))
 
@@ -1121,6 +1230,7 @@ class StudioApp:
         locator_offset = self._locator_offset()
         if locator_offset is None:
             return
+        smoke_scale = self._smoke_scale()
 
         def work() -> None:
             try:
@@ -1132,6 +1242,7 @@ class StudioApp:
                     smoke_mod=smoke,
                     icon_path=icon,
                     locator_offset=locator_offset,
+                    smoke_scale=smoke_scale,
                     log=self._thread_log,
                 )
                 self.queue.put(("done", f"Creado: {result.output_zip}"))
@@ -1160,12 +1271,14 @@ class StudioApp:
                     self.progress.stop()
                     self._log(message)
                     self.messagebox.showinfo(APP_TITLE, message)
-                elif kind == "update":
+                elif kind == "update_ready":
                     self.progress.stop()
-                    text, url = message.split("|", 1)
+                    tag, setup = message.split("|", 1)
+                    text = f"Actualizacion {tag} descargada. Se abrira el instalador y la app se cerrara."
                     self._log(text)
-                    if self.messagebox.askyesno(APP_TITLE, text + "\n\nQuieres abrir la descarga?"):
-                        webbrowser.open(url)
+                    self.messagebox.showinfo(APP_TITLE, text)
+                    subprocess.Popen([setup, "/CURRENTUSER"], close_fds=True)
+                    self.root.after(500, self.root.destroy)
                 elif kind == "error":
                     self.progress.stop()
                     self._log("ERROR: " + message)
@@ -1192,10 +1305,13 @@ def main() -> int:
     parser.add_argument("--offset-x", type=float, default=0.0, help="Manual X offset for generated locators")
     parser.add_argument("--offset-y", type=float, default=0.0, help="Manual Y offset for generated locators")
     parser.add_argument("--offset-z", type=float, default=0.0, help="Manual Z offset for generated locators")
+    parser.add_argument("--smoke-profile", choices=list(SMOKE_PROFILE_SCALES), default="Actual")
+    parser.add_argument("--smoke-scale", type=float, help="Manual smoke locator scale; overrides --smoke-profile")
     args = parser.parse_args()
     output_dir = args.output or game_mod_dir(args.game)
     smoke_mod = args.smoke_mod or default_smoke_mod(args.game)
     locator_offset = (args.offset_x, args.offset_y, args.offset_z)
+    smoke_scale = args.smoke_scale if args.smoke_scale is not None else SMOKE_PROFILE_SCALES[args.smoke_profile]
 
     if args.cli:
         if not args.mod:
@@ -1203,7 +1319,7 @@ def main() -> int:
         if args.analyze:
             analyze_mod(args.mod)
         else:
-            build_smoke_patch(args.mod, output_dir, args.mode, args.install, smoke_mod, args.icon, locator_offset)
+            build_smoke_patch(args.mod, output_dir, args.mode, args.install, smoke_mod, args.icon, locator_offset, smoke_scale)
         return 0
 
     app = StudioApp()
