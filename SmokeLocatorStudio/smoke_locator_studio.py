@@ -21,7 +21,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.17"
+APP_VERSION = "0.3.18"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -143,6 +143,9 @@ class LocatorCandidate:
     suggested_direction: str
     outlet_kind: str
     preview_vertices: tuple[tuple[float, float, float], ...]
+    preview_triangles: tuple[
+        tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]], ...
+    ] = ()
 
 
 @dataclass(frozen=True)
@@ -989,6 +992,36 @@ def sampled_vertices(
     return tuple(vertices[::step][:limit])
 
 
+def triangles_from_pieces(
+    piece_meshes: dict[int, tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]],
+    pieces: list[int],
+    locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
+    limit: int = 5200,
+) -> tuple[tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]], ...]:
+    triangles: list[tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]] = []
+    total = sum(len(piece_meshes.get(piece, ([], []))[1]) for piece in pieces)
+    step = max(1, total // limit) if total > limit else 1
+    seen = 0
+    for piece in pieces:
+        vertices, piece_triangles = piece_meshes.get(piece, ([], []))
+        for triangle in piece_triangles:
+            seen += 1
+            if seen % step != 0:
+                continue
+            if any(index < 0 or index >= len(vertices) for index in triangle):
+                continue
+            triangles.append(
+                (
+                    apply_offset(vertices[triangle[0]], locator_offset),
+                    apply_offset(vertices[triangle[1]], locator_offset),
+                    apply_offset(vertices[triangle[2]], locator_offset),
+                )
+            )
+            if len(triangles) >= limit:
+                return tuple(triangles)
+    return tuple(triangles)
+
+
 def locator_bounds_from_pieces(
     piece_vertices: dict[int, list[tuple[float, float, float]]], pieces: list[int], locator_offset: LocatorOffset
 ) -> tuple[float, float, float, float, float, float] | None:
@@ -1119,6 +1152,7 @@ def inspect_pim_locator_candidates(
 ) -> list[LocatorCandidate]:
     text = pim_path.read_text(encoding="utf-8", errors="ignore")
     piece_vertices = parse_piece_vertices(pim_path)
+    piece_meshes = parse_piece_meshes(pim_path, set(piece_vertices))
     skip_part_names = skip_part_names or set()
     candidates: list[LocatorCandidate] = []
     part_counts: dict[str, int] = {}
@@ -1138,6 +1172,7 @@ def inspect_pim_locator_candidates(
         part_bounds = locator_bounds_from_pieces(piece_vertices, pieces, locator_offset)
         part_vertices = vertices_from_pieces(piece_vertices, pieces, locator_offset)
         preview_vertices = sampled_vertices(part_vertices)
+        preview_triangles = triangles_from_pieces(piece_meshes, pieces, locator_offset)
         positions = locator_positions_from_pieces(piece_vertices, pieces)
         for ordinal, position in enumerate(positions, 1):
             detected_position = apply_offset(position, locator_offset)
@@ -1163,6 +1198,7 @@ def inspect_pim_locator_candidates(
                     suggested_direction=suggested_direction_from_bounds(final_position, candidate_bounds),
                     outlet_kind=outlet_kind_from_vertices(detected_position, final_position, candidate_bounds),
                     preview_vertices=preview_vertices,
+                    preview_triangles=preview_triangles,
                 )
             )
     return candidates
@@ -2329,7 +2365,7 @@ class StudioApp:
         view_controls.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 16))
         ttk.Label(
             view_controls,
-            text="Gris = modelo real, amarillo = humo, verde = boca detectada",
+            text="Gris = superficie real, amarillo = humo, verde = boca detectada",
             style="Hint.TLabel",
         ).pack(side="left")
         view_combo = ttk.Combobox(
@@ -2447,6 +2483,16 @@ class StudioApp:
 
         def draw_3d(width: int, height: int, keys_to_draw: list[str]) -> None:
             vertices: list[tuple[str, tuple[float, float, float]]] = []
+            triangles: list[
+                tuple[
+                    str,
+                    tuple[
+                        tuple[float, float, float],
+                        tuple[float, float, float],
+                        tuple[float, float, float],
+                    ],
+                ]
+            ] = []
             smoke_points: list[tuple[str, tuple[float, float, float], bool]] = []
             outlet_points: list[tuple[str, tuple[float, float, float]]] = []
             for key in keys_to_draw:
@@ -2456,6 +2502,7 @@ class StudioApp:
                 assert isinstance(candidate, LocatorCandidate)
                 assert isinstance(position, list)
                 vertices.extend((key, vertex) for vertex in candidate.preview_vertices)
+                triangles.extend((key, triangle) for triangle in candidate.preview_triangles)
                 smoke_points.append(
                     (
                         key,
@@ -2508,7 +2555,23 @@ class StudioApp:
                             )[: min(900, len(selected_vertices))]
                         ]
                     vertices = close_vertices
+                    triangles = [
+                        (key, triangle)
+                        for key, triangle in triangles
+                        if key == selected
+                        and any(
+                            (
+                                (vertex[0] - center_point[0]) ** 2
+                                + (vertex[1] - center_point[1]) ** 2
+                                + (vertex[2] - center_point[2]) ** 2
+                            )
+                            ** 0.5
+                            <= radius
+                            for vertex in triangle
+                        )
+                    ]
             coords = [point for _key, point in vertices]
+            coords.extend(vertex for _key, triangle in triangles for vertex in triangle)
             coords.extend(point for _key, point, _enabled in smoke_points)
             coords.extend(point for _key, point in outlet_points)
             if not coords:
@@ -2598,11 +2661,54 @@ class StudioApp:
                 32,
                 anchor="nw",
                 fill="#93a4b5",
-                text="Amarillo = humo, verde = boca, gris = escape real",
+                text="Amarillo = humo, verde = boca, gris = superficie real",
             )
             if isolate_var.get():
                 note = "Zoom boca activo" if zoom_var.get() else "Viendo solo seleccionado"
                 canvas.create_text(width - 12, 12, anchor="ne", fill="#93a4b5", text=note)
+
+            def shade_color(base: tuple[int, int, int], intensity: float) -> str:
+                value = max(0.0, min(1.0, intensity))
+                r_value = int(base[0] * (0.50 + value * 0.60))
+                g_value = int(base[1] * (0.50 + value * 0.60))
+                b_value = int(base[2] * (0.50 + value * 0.60))
+                return f"#{min(r_value, 255):02x}{min(g_value, 255):02x}{min(b_value, 255):02x}"
+
+            triangle_draw: list[tuple[float, str, list[float], bool]] = []
+            triangle_sample = triangles
+            if len(triangle_sample) > 6500:
+                step = max(1, len(triangle_sample) // 6500)
+                triangle_sample = triangle_sample[::step]
+            for key, triangle in triangle_sample:
+                rotated = [rotate_3d(point, center) for point in triangle]
+                projected = [(width / 2 + point[0] * scale, height / 2 - point[1] * scale, point[2]) for point in rotated]
+                if all(px < -80 or px > width + 80 or py < -80 or py > height + 80 for px, py, _depth in projected):
+                    continue
+                ax, ay, az = rotated[0]
+                bx, by, bz = rotated[1]
+                cx, cy, cz = rotated[2]
+                ux, uy, uz = bx - ax, by - ay, bz - az
+                vx, vy, vz = cx - ax, cy - ay, cz - az
+                normal_x = uy * vz - uz * vy
+                normal_y = uz * vx - ux * vz
+                normal_z = ux * vy - uy * vx
+                normal_len = max((normal_x**2 + normal_y**2 + normal_z**2) ** 0.5, 0.0001)
+                light = (0.25, -0.45, 0.86)
+                intensity = abs((normal_x * light[0] + normal_y * light[1] + normal_z * light[2]) / normal_len)
+                selected_model = key == selected
+                base_color = (188, 199, 211) if selected_model else (98, 112, 130)
+                fill = shade_color(base_color, 0.28 + intensity * 0.72)
+                coords_2d = [coord for px, py, _depth in projected for coord in (px, py)]
+                avg_depth = sum(point[2] for point in projected) / 3.0
+                triangle_draw.append((avg_depth, fill, coords_2d, selected_model))
+            for _depth, fill, coords_2d, selected_model in sorted(triangle_draw, key=lambda item: item[0]):
+                canvas.create_polygon(
+                    coords_2d,
+                    fill=fill,
+                    outline="#cbd5e1" if selected_model else "#1f2937",
+                    width=1,
+                )
+            keys_with_triangles = {key for key, _triangle in triangle_sample}
 
             model_draw = vertices
             if len(model_draw) > 12000:
@@ -2620,6 +2726,8 @@ class StudioApp:
                 projected_by_key.items(),
                 key=lambda item: sum(point[2] for point in item[1]) / max(len(item[1]), 1),
             ):
+                if key in keys_with_triangles:
+                    continue
                 selected_model = key == selected
                 hull = convex_hull([(px, py) for px, py, _depth in projected])
                 if len(hull) >= 3:
