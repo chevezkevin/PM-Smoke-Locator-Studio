@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import queue
 import re
@@ -20,7 +21,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.13"
+APP_VERSION = "0.3.14"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -287,14 +288,16 @@ Manual: guarda este manual en tu PC.
 15. Editor visual de locators
 Amarillo: punto de humo seleccionado.
 Verde: salida sugerida del escape.
-Gris: puntos reales del modelo del escape.
+Gris: silueta del modelo real del escape.
 Rectangulo: limite de la pieza del escape.
 Solo seleccionado: muestra solo el punto actual para verlo claro.
 Modelo de escape: filtra los puntos por escape.
+Vista 3D libre: visor simple tipo Blender. Arrastra con el mouse para girar el escape completo y usa la rueda para acercar o alejar.
 Vista X/Z: ve el escape desde arriba.
 Vista X/Y: ve el escape de lado para revisar altura y curva.
 Vista Z/Y: ve el escape de frente/atras para revisar salida hacia adelante o atras.
-Zoom boca: recomendado. Acerca la vista a la punta del escape para que no se vea aplastado el modelo completo.
+Reset 3D: vuelve la camara del visor 3D a la posicion inicial.
+Zoom boca: acerca la vista a la punta del escape cuando necesitas detalle. Desmarcalo si quieres ver el escape completo.
 Usar este locator: activa o desactiva ese punto.
 X/Y/Z: mueve el punto exacto.
 Paso: cantidad que mueve cada boton.
@@ -1904,8 +1907,8 @@ class StudioApp:
         ttk = self.ttk
         win = tk.Toplevel(self.root)
         win.title("Editor visual de locators")
-        win.geometry("1040x680")
-        win.minsize(900, 580)
+        win.geometry("1220x760")
+        win.minsize(1040, 660)
         win.configure(bg="#101418")
 
         state: dict[str, dict[str, object]] = {}
@@ -1932,8 +1935,8 @@ class StudioApp:
         step_var = tk.StringVar(value="0.02")
         direction_var = tk.StringVar()
         isolate_var = tk.BooleanVar(value=True)
-        view_var = tk.StringVar(value="X/Y lado")
-        zoom_var = tk.BooleanVar(value=True)
+        view_var = tk.StringVar(value="3D libre")
+        zoom_var = tk.BooleanVar(value=False)
 
         outer = ttk.Frame(win, padding=14)
         outer.pack(fill="both", expand=True)
@@ -1947,7 +1950,7 @@ class StudioApp:
         body = ttk.Frame(outer)
         body.pack(fill="both", expand=True)
         body.columnconfigure(0, weight=3)
-        body.columnconfigure(1, weight=2)
+        body.columnconfigure(1, weight=3)
         body.rowconfigure(0, weight=1)
 
         table_frame = ttk.Frame(body)
@@ -1987,7 +1990,7 @@ class StudioApp:
         right = ttk.Frame(body, style="Panel.TFrame", padding=12)
         right.grid(row=0, column=1, sticky="nsew")
         right.columnconfigure(0, weight=1)
-        canvas = tk.Canvas(right, height=300, bg="#0b0f13", highlightthickness=0)
+        canvas = tk.Canvas(right, height=380, bg="#0b0f13", highlightthickness=0)
         canvas.grid(row=0, column=0, columnspan=4, sticky="ew")
         view_controls = ttk.Frame(right, style="Panel.TFrame")
         view_controls.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 16))
@@ -1999,11 +2002,12 @@ class StudioApp:
         view_combo = ttk.Combobox(
             view_controls,
             textvariable=view_var,
-            values=["X/Z arriba", "X/Y lado", "Z/Y frente"],
+            values=["3D libre", "X/Z arriba", "X/Y lado", "Z/Y frente"],
             width=12,
             state="readonly",
         )
         view_combo.pack(side="left", padx=(10, 0))
+        ttk.Button(view_controls, text="Reset 3D", command=lambda: reset_3d()).pack(side="left", padx=(8, 0))
         ttk.Checkbutton(view_controls, text="Zoom boca", variable=zoom_var, command=lambda: draw()).pack(
             side="left", padx=(10, 0)
         )
@@ -2073,11 +2077,206 @@ class StudioApp:
                 selected_key.set("")
                 draw()
 
+        camera = {
+            "yaw": math.radians(-35.0),
+            "pitch": math.radians(22.0),
+            "scale": 1.0,
+            "drag": None,
+        }
+
+        def reset_3d() -> None:
+            camera["yaw"] = math.radians(-35.0)
+            camera["pitch"] = math.radians(22.0)
+            camera["scale"] = 1.0
+            view_var.set("3D libre")
+            draw()
+
+        def rotate_3d(
+            point: tuple[float, float, float], center: tuple[float, float, float]
+        ) -> tuple[float, float, float]:
+            x_value = point[0] - center[0]
+            y_value = point[1] - center[1]
+            z_value = point[2] - center[2]
+            yaw = float(camera["yaw"])
+            pitch = float(camera["pitch"])
+            cos_yaw = math.cos(yaw)
+            sin_yaw = math.sin(yaw)
+            x_rot = x_value * cos_yaw + z_value * sin_yaw
+            z_rot = -x_value * sin_yaw + z_value * cos_yaw
+            cos_pitch = math.cos(pitch)
+            sin_pitch = math.sin(pitch)
+            y_rot = y_value * cos_pitch - z_rot * sin_pitch
+            depth = y_value * sin_pitch + z_rot * cos_pitch
+            return x_rot, y_rot, depth
+
+        def draw_3d(width: int, height: int, keys_to_draw: list[str]) -> None:
+            vertices: list[tuple[str, tuple[float, float, float]]] = []
+            smoke_points: list[tuple[str, tuple[float, float, float], bool]] = []
+            outlet_points: list[tuple[str, tuple[float, float, float]]] = []
+            for key in keys_to_draw:
+                item = state[key]
+                candidate = item["candidate"]
+                position = item["position"]
+                assert isinstance(candidate, LocatorCandidate)
+                assert isinstance(position, list)
+                vertices.extend((key, vertex) for vertex in candidate.preview_vertices)
+                smoke_points.append(
+                    (
+                        key,
+                        (float(position[0]), float(position[1]), float(position[2])),
+                        bool(item["enabled"]),
+                    )
+                )
+                outlet_points.append((key, candidate.outlet_position))
+            if not smoke_points:
+                canvas.create_text(width / 2, height / 2, fill="#93a4b5", text="No hay locators en este modelo")
+                return
+            selected = selected_key.get()
+            if zoom_var.get() and isolate_var.get() and selected in state:
+                selected_item = state[selected]
+                selected_candidate = selected_item["candidate"]
+                selected_position = selected_item["position"]
+                assert isinstance(selected_candidate, LocatorCandidate)
+                assert isinstance(selected_position, list)
+                center_point = (
+                    (float(selected_position[0]) + selected_candidate.outlet_position[0]) / 2,
+                    (float(selected_position[1]) + selected_candidate.outlet_position[1]) / 2,
+                    (float(selected_position[2]) + selected_candidate.outlet_position[2]) / 2,
+                )
+                selected_vertices = [vertex for key, vertex in vertices if key == selected]
+                if selected_vertices:
+                    radius = 0.8
+                    close_vertices = [
+                        (key, vertex)
+                        for key, vertex in vertices
+                        if key == selected
+                        and (
+                            (vertex[0] - center_point[0]) ** 2
+                            + (vertex[1] - center_point[1]) ** 2
+                            + (vertex[2] - center_point[2]) ** 2
+                        )
+                        ** 0.5
+                        <= radius
+                    ]
+                    if len(close_vertices) < 120:
+                        close_vertices = [
+                            (selected, vertex)
+                            for vertex in sorted(
+                                selected_vertices,
+                                key=lambda vertex: (
+                                    (vertex[0] - center_point[0]) ** 2
+                                    + (vertex[1] - center_point[1]) ** 2
+                                    + (vertex[2] - center_point[2]) ** 2
+                                )
+                                ** 0.5,
+                            )[: min(900, len(selected_vertices))]
+                        ]
+                    vertices = close_vertices
+            coords = [point for _key, point in vertices]
+            coords.extend(point for _key, point, _enabled in smoke_points)
+            coords.extend(point for _key, point in outlet_points)
+            if not coords:
+                canvas.create_text(width / 2, height / 2, fill="#93a4b5", text="No hay geometria para mostrar")
+                return
+            center = (
+                sum(point[0] for point in coords) / len(coords),
+                sum(point[1] for point in coords) / len(coords),
+                sum(point[2] for point in coords) / len(coords),
+            )
+            span = max(
+                max(point[0] for point in coords) - min(point[0] for point in coords),
+                max(point[1] for point in coords) - min(point[1] for point in coords),
+                max(point[2] for point in coords) - min(point[2] for point in coords),
+                0.2,
+            )
+            render_width = max(width - 34, 280)
+            render_height = max(height - 34, 220)
+            scale = min(render_width, render_height) * 0.84 / span * float(camera["scale"])
+
+            def project_3d(point: tuple[float, float, float]) -> tuple[float, float, float]:
+                x_rot, y_rot, depth = rotate_3d(point, center)
+                return width / 2 + x_rot * scale, height / 2 - y_rot * scale, depth
+
+            canvas.create_text(
+                12,
+                12,
+                anchor="nw",
+                fill="#93a4b5",
+                text="Vista 3D libre: arrastra para girar, rueda = zoom",
+            )
+            canvas.create_text(
+                12,
+                32,
+                anchor="nw",
+                fill="#93a4b5",
+                text="Amarillo = humo, verde = boca, gris = escape real",
+            )
+            if isolate_var.get():
+                note = "Zoom boca activo" if zoom_var.get() else "Viendo solo seleccionado"
+                canvas.create_text(width - 12, 12, anchor="ne", fill="#93a4b5", text=note)
+
+            model_draw = vertices
+            if len(model_draw) > 7000:
+                step = max(1, len(model_draw) // 7000)
+                model_draw = model_draw[::step]
+            cells: dict[tuple[int, int, bool], tuple[float, int]] = {}
+            cell_size = 5
+            for key, vertex in model_draw:
+                px, py, depth = project_3d(vertex)
+                if px < -30 or py < -30 or px > width + 30 or py > height + 30:
+                    continue
+                cell_x = int(px // cell_size)
+                cell_y = int(py // cell_size)
+                selected_cell = key == selected
+                cell_key = (cell_x, cell_y, selected_cell)
+                old_depth, old_count = cells.get(cell_key, (-9999.0, 0))
+                cells[cell_key] = (max(old_depth, depth), old_count + 1)
+            for (cell_x, cell_y, selected_cell), (_depth, count) in sorted(cells.items(), key=lambda item: item[1][0]):
+                x0 = cell_x * cell_size
+                y0 = cell_y * cell_size
+                if selected_cell:
+                    fill = "#94a3b8" if count > 3 else "#64748b"
+                else:
+                    fill = "#475569" if count > 3 else "#334155"
+                canvas.create_rectangle(x0, y0, x0 + cell_size + 1, y0 + cell_size + 1, fill=fill, outline="")
+
+            for key, point in outlet_points:
+                px, py, _depth = project_3d(point)
+                color = "#22c55e" if key == selected else "#166534"
+                canvas.create_line(px - 11, py, px + 11, py, fill=color, width=2)
+                canvas.create_line(px, py - 11, px, py + 11, fill=color, width=2)
+                canvas.create_oval(px - 6, py - 6, px + 6, py + 6, outline=color, width=2)
+                if key == selected:
+                    canvas.create_text(px + 12, py - 12, anchor="sw", fill=color, text="boca")
+            for key, point, enabled in smoke_points:
+                px, py, _depth = project_3d(point)
+                color = "#facc15" if key == selected else ("#38bdf8" if enabled else "#64748b")
+                radius = 8 if key == selected else 5
+                canvas.create_oval(px - radius, py - radius, px + radius, py + radius, fill=color, outline="")
+
+            axis_origin = (44, height - 42)
+            axis_length = 34
+            axes = [
+                ("X", (1.0, 0.0, 0.0), "#38bdf8"),
+                ("Y", (0.0, 1.0, 0.0), "#22c55e"),
+                ("Z", (0.0, 0.0, 1.0), "#f97316"),
+            ]
+            for label, vector, color in axes:
+                x_rot, y_rot, _depth = rotate_3d(vector, (0.0, 0.0, 0.0))
+                end_x = axis_origin[0] + x_rot * axis_length
+                end_y = axis_origin[1] - y_rot * axis_length
+                canvas.create_line(axis_origin[0], axis_origin[1], end_x, end_y, fill=color, width=2)
+                canvas.create_text(end_x + 4, end_y, anchor="w", fill=color, text=label)
+
         def draw() -> None:
             canvas.delete("all")
             width = max(canvas.winfo_width(), 320)
             height = max(canvas.winfo_height(), 260)
             view = view_var.get()
+            keys_to_draw = [selected_key.get()] if isolate_var.get() and selected_key.get() in state else visible_keys()
+            if view == "3D libre":
+                draw_3d(width, height, keys_to_draw)
+                return
             if view == "X/Y lado":
                 axis_text = ("X - izquierda   X + derecha", "Y - abajo       Y + arriba")
                 project_index = (0, 1)
@@ -2089,7 +2288,6 @@ class StudioApp:
                 project_index = (0, 2)
             canvas.create_text(12, 12, anchor="nw", fill="#93a4b5", text=axis_text[0])
             canvas.create_text(12, 32, anchor="nw", fill="#93a4b5", text=axis_text[1])
-            keys_to_draw = [selected_key.get()] if isolate_var.get() and selected_key.get() in state else visible_keys()
             points: list[tuple[str, float, float, bool]] = []
             outlets: list[tuple[str, float, float]] = []
             bounds_items: list[tuple[str, tuple[float, float, float, float, float, float]]] = []
@@ -2189,10 +2387,21 @@ class StudioApp:
             if len(model_draw) > 2600:
                 step = max(1, len(model_draw) // 2600)
                 model_draw = model_draw[::step]
+            cells: dict[tuple[int, int, bool], int] = {}
+            cell_size = 5 if zoom_mode else 4
             for key, x_value, z_value in model_draw:
                 px, py = project(x_value, z_value)
-                color = "#475569" if key == selected_key.get() else "#26313d"
-                canvas.create_rectangle(px - 1, py - 1, px + 1, py + 1, outline=color)
+                cell_x = int(px // cell_size)
+                cell_y = int(py // cell_size)
+                selected_cell = key == selected_key.get()
+                cells[(cell_x, cell_y, selected_cell)] = cells.get((cell_x, cell_y, selected_cell), 0) + 1
+            for (cell_x, cell_y, selected_cell), count in cells.items():
+                x0 = cell_x * cell_size
+                y0 = cell_y * cell_size
+                fill = "#64748b" if selected_cell else "#334155"
+                if count > 5:
+                    fill = "#94a3b8" if selected_cell else "#475569"
+                canvas.create_rectangle(x0, y0, x0 + cell_size + 1, y0 + cell_size + 1, fill=fill, outline="")
             for key, bounds in bounds_items:
                 bounds_a_min, bounds_b_min, bounds_a_max, bounds_b_max = bounds_projection(bounds)
                 left, top = project(bounds_a_min, bounds_b_max)
@@ -2344,8 +2553,38 @@ class StudioApp:
             if selection and selection[0] != selected_key.get():
                 load_selected(selection[0])
 
+        def on_canvas_press(event: object) -> None:
+            if view_var.get() != "3D libre":
+                return
+            camera["drag"] = (event.x, event.y)
+
+        def on_canvas_drag(event: object) -> None:
+            if view_var.get() != "3D libre":
+                return
+            drag = camera.get("drag")
+            if not isinstance(drag, tuple):
+                return
+            last_x, last_y = drag
+            dx = event.x - last_x
+            dy = event.y - last_y
+            camera["yaw"] = float(camera["yaw"]) + dx * 0.010
+            camera["pitch"] = max(-1.35, min(1.35, float(camera["pitch"]) + dy * 0.010))
+            camera["drag"] = (event.x, event.y)
+            draw()
+
+        def on_canvas_wheel(event: object) -> None:
+            if view_var.get() != "3D libre":
+                return
+            delta = getattr(event, "delta", 0)
+            factor = 1.12 if delta > 0 else 1 / 1.12
+            camera["scale"] = max(0.25, min(5.0, float(camera["scale"]) * factor))
+            draw()
+
         tree.bind("<<TreeviewSelect>>", on_select)
         canvas.bind("<Configure>", lambda _event: draw())
+        canvas.bind("<ButtonPress-1>", on_canvas_press)
+        canvas.bind("<B1-Motion>", on_canvas_drag)
+        canvas.bind("<MouseWheel>", on_canvas_wheel)
         model_combo.bind("<<ComboboxSelected>>", model_changed)
         view_combo.bind("<<ComboboxSelected>>", lambda _event: draw())
         direction_combo.bind("<<ComboboxSelected>>", lambda _event: apply_selected())
