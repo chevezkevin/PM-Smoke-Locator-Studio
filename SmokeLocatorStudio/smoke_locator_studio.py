@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.2.3"
+APP_VERSION = "0.2.4"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -1090,6 +1090,7 @@ class StudioApp:
         style.configure("Muted.TLabel", background="#101418", foreground="#93a4b5", font=("Segoe UI", 9))
         style.configure("Title.TLabel", background="#101418", foreground="#ffffff", font=("Segoe UI Semibold", 20))
         style.configure("Card.TLabel", background="#171d23", foreground="#edf2f7")
+        style.configure("Hint.TLabel", background="#171d23", foreground="#93a4b5", font=("Segoe UI", 9))
         style.configure("TButton", font=("Segoe UI Semibold", 10), padding=(12, 8))
         style.configure("Accent.TButton", font=("Segoe UI Semibold", 11), padding=(14, 10))
         style.configure("TRadiobutton", background="#171d23", foreground="#edf2f7")
@@ -1143,21 +1144,28 @@ class StudioApp:
 
         offset_panel = ttk.Frame(panel, style="Panel.TFrame")
         offset_panel.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(8, 4))
-        ttk.Label(offset_panel, text="Nivel", style="Card.TLabel").pack(side="left")
+        offset_controls = ttk.Frame(offset_panel, style="Panel.TFrame")
+        offset_controls.pack(fill="x")
+        ttk.Label(offset_controls, text="Nivel", style="Card.TLabel").pack(side="left")
         ttk.Combobox(
-            offset_panel,
+            offset_controls,
             textvariable=self.smoke_profile,
             values=list(SMOKE_PROFILE_SCALES),
             width=10,
             state="readonly",
         ).pack(side="left", padx=(8, 18))
-        ttk.Label(offset_panel, text="Ajuste manual locators", style="Card.TLabel").pack(side="left")
-        ttk.Label(offset_panel, text="X", style="Card.TLabel").pack(side="left", padx=(18, 4))
-        ttk.Entry(offset_panel, textvariable=self.offset_x, width=8).pack(side="left")
-        ttk.Label(offset_panel, text="Y", style="Card.TLabel").pack(side="left", padx=(12, 4))
-        ttk.Entry(offset_panel, textvariable=self.offset_y, width=8).pack(side="left")
-        ttk.Label(offset_panel, text="Z", style="Card.TLabel").pack(side="left", padx=(12, 4))
-        ttk.Entry(offset_panel, textvariable=self.offset_z, width=8).pack(side="left")
+        ttk.Label(offset_controls, text="Ajuste manual locators", style="Card.TLabel").pack(side="left")
+        ttk.Label(offset_controls, text="X", style="Card.TLabel").pack(side="left", padx=(18, 4))
+        ttk.Entry(offset_controls, textvariable=self.offset_x, width=8).pack(side="left")
+        ttk.Label(offset_controls, text="Y", style="Card.TLabel").pack(side="left", padx=(12, 4))
+        ttk.Entry(offset_controls, textvariable=self.offset_y, width=8).pack(side="left")
+        ttk.Label(offset_controls, text="Z", style="Card.TLabel").pack(side="left", padx=(12, 4))
+        ttk.Entry(offset_controls, textvariable=self.offset_z, width=8).pack(side="left")
+        ttk.Label(
+            offset_panel,
+            text="Referencia: X - izquierda / X + derecha    Y - abajo / Y + arriba    Z - atras / Z + adelante",
+            style="Hint.TLabel",
+        ).pack(anchor="w", pady=(5, 0))
 
         options_panel = ttk.Frame(panel, style="Panel.TFrame")
         options_panel.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(8, 4))
