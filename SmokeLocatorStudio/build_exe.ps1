@@ -8,6 +8,7 @@ $work = Join-Path $projectRoot "build"
 $tools = Join-Path $projectRoot "work\tools"
 $assets = Join-Path $scriptDir "assets"
 $exeName = "PMSmokeLocatorStudio_v0.1.9"
+$genericExeName = "PMSmokeLocatorStudio"
 
 if (!(Test-Path -LiteralPath $app)) {
     throw "No se encontro smoke_locator_studio.py"
@@ -30,8 +31,6 @@ if ($pyInstallerExit -ne 0) {
 
 python -m pip install --user pillow
 
-python -m pip install --user pillow
-
 $addTools = "$tools;work\tools"
 $addAssets = "$assets;SmokeLocatorStudio\assets"
 
@@ -48,6 +47,9 @@ python -m PyInstaller `
     --specpath "$work" `
     --add-data "$addTools" `
     --add-data "$addAssets" `
+    --hidden-import PIL `
+    --hidden-import PIL.Image `
+    --hidden-import PIL.ImageOps `
     "$app"
 
 if ($LASTEXITCODE -ne 0) {
@@ -57,5 +59,8 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "EXE creado:"
 Write-Host (Join-Path $dist "$exeName.exe")
+
+Copy-Item -LiteralPath (Join-Path $dist "$exeName.exe") -Destination (Join-Path $dist "$genericExeName.exe") -Force
+Write-Host (Join-Path $dist "$genericExeName.exe")
 
 

@@ -20,20 +20,34 @@ jobs:
           python-version: "3.12"
 
       - name: Install PyInstaller
-        run: python -m pip install pyinstaller
+        run: python -m pip install pyinstaller pillow
 
       - name: Build EXE
         shell: pwsh
         run: .\SmokeLocatorStudio\build_exe.ps1
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Setup
+        shell: pwsh
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" .\SmokeLocatorStudio\installer.iss'
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: PMSmokeLocatorStudio-Windows
-          path: dist\PMSmokeLocatorStudio.exe
+          path: |
+            dist\PMSmokeLocatorStudio.exe
+            dist\PMSmokeLocatorStudio_v*.exe
+            dist\PMSmokeLocatorStudio_Setup_v*.exe
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist\PMSmokeLocatorStudio.exe
+          files: |
+            dist\PMSmokeLocatorStudio.exe
+            dist\PMSmokeLocatorStudio_v*.exe
+            dist\PMSmokeLocatorStudio_Setup_v*.exe

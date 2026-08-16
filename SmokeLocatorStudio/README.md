@@ -34,9 +34,29 @@ El ejecutable queda en:
 dist\PMSmokeLocatorStudio.exe
 ```
 
+Tambien se crea una copia versionada:
+
+```text
+dist\PMSmokeLocatorStudio_v0.1.9.exe
+```
+
+## Crear Setup
+
+El instalador se crea con Inno Setup usando:
+
+```text
+SmokeLocatorStudio\installer.iss
+```
+
+Cuando GitHub Actions corre desde un tag `v...`, compila:
+
+- `PMSmokeLocatorStudio.exe`
+- `PMSmokeLocatorStudio_vX.X.X.exe`
+- `PMSmokeLocatorStudio_Setup_vX.X.X.exe`
+
 ## GitHub y actualizaciones
 
-Este proyecto esta listo para subirse a GitHub.
+Este proyecto esta listo para subirse a GitHub y publicar instaladores.
 
 Ruta recomendada:
 
@@ -47,9 +67,18 @@ PM-Smoke-Locator-Studio
 Para publicar actualizaciones:
 
 1. Sube el proyecto a GitHub.
-2. Crea un tag, por ejemplo `v0.1.0`.
-3. Publica un Release con ese tag.
-4. GitHub Actions puede compilar el `.exe` y dejarlo como archivo descargable del Release.
+2. Cambia `APP_VERSION` y `installer.iss` a la nueva version.
+3. Crea un tag, por ejemplo `v0.1.9`.
+4. Sube el tag a GitHub.
+5. GitHub Actions compila el `.exe` y el `Setup`.
+6. La app instalada puede usar el boton `Actualizar` para abrir la descarga del ultimo Release.
+
+Ejemplo:
+
+```powershell
+git tag v0.1.9
+git push origin v0.1.9
+```
 
 ## Seguridad
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import queue
 import re
@@ -10,6 +11,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
+import webbrowser
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +22,9 @@ from typing import Callable
 
 APP_TITLE = "PM Smoke Locator Studio"
 APP_VERSION = "0.1.9"
+GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
+GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
+GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 
 def app_root() -> Path:
@@ -37,7 +44,6 @@ BUNDLE = bundled_root()
 WORK = (Path.home() / "Documents" / "PM Smoke Locator Studio" / "work") if getattr(sys, "frozen", False) else ROOT / "work"
 TOOLS = BUNDLE / "work" / "tools"
 DEFAULT_ICON = BUNDLE / "SmokeLocatorStudio" / "assets" / "mod_icon.jpg"
-MOD_ICON_SIZE = (276, 162)
 MOD_ICON_SIZE = (276, 162)
 CONVERTER_PIX = TOOLS / "converter_pix" / "converter_pix.exe"
 CONVERSION_TOOLS_ZIP = TOOLS / "conversion_tools_2_21.zip"
@@ -106,6 +112,37 @@ class BuildResult:
 
 class ToolError(RuntimeError):
     pass
+
+
+def parse_version(value: str) -> tuple[int, ...]:
+    clean = value.strip().lower().lstrip("v")
+    parts = []
+    for part in clean.split("."):
+        number = "".join(ch for ch in part if ch.isdigit())
+        parts.append(int(number or "0"))
+    return tuple(parts or [0])
+
+
+def latest_release() -> tuple[str, str]:
+    request = urllib.request.Request(
+        GITHUB_LATEST_API,
+        headers={"Accept": "application/vnd.github+json", "User-Agent": f"{APP_TITLE}/{APP_VERSION}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise ToolError("Todavia no hay Releases publicados en GitHub.") from exc
+        raise ToolError(f"No pude revisar GitHub: HTTP {exc.code}") from exc
+    except Exception as exc:
+        raise ToolError(f"No pude revisar actualizaciones: {exc}") from exc
+
+    tag = str(data.get("tag_name") or "").strip()
+    url = str(data.get("html_url") or GITHUB_RELEASES_URL)
+    if not tag:
+        raise ToolError("GitHub no devolvio una version valida.")
+    return tag, url
 
 
 def run_command(args: list[str | Path], cwd: Path | None = None, log: LogFn | None = None) -> str:
@@ -856,6 +893,7 @@ class StudioApp:
         actions.pack(fill="x")
         ttk.Button(actions, text="Analizar", command=self._analyze).pack(side="left")
         ttk.Button(actions, text="Crear humo", style="Accent.TButton", command=self._build_patch).pack(side="left", padx=10)
+        ttk.Button(actions, text="Actualizar", command=self._check_updates).pack(side="left")
         ttk.Button(actions, text="Limpiar log", command=self._clear_log).pack(side="right")
 
         self.progress = ttk.Progressbar(outer, mode="indeterminate")
@@ -906,15 +944,6 @@ class StudioApp:
         if path:
             self.icon_path.set(path)
 
-    def _choose_icon(self) -> None:
-        path = self.filedialog.askopenfilename(
-            title="Seleccionar foto del mod",
-            filetypes=[("Imagenes", "*.jpg *.jpeg *.png *.bmp *.webp"), ("Todos", "*.*")],
-            initialdir=str(Path.home() / "Pictures"),
-        )
-        if path:
-            self.icon_path.set(path)
-
     def _run_worker(self, target: Callable[[], None]) -> None:
         if self.worker and self.worker.is_alive():
             self.messagebox.showwarning(APP_TITLE, "Ya hay un trabajo corriendo.")
@@ -944,14 +973,27 @@ class StudioApp:
 
         self._run_worker(work)
 
+    def _check_updates(self) -> None:
+        def work() -> None:
+            try:
+                tag, url = latest_release()
+                latest = parse_version(tag)
+                current = parse_version(APP_VERSION)
+                if latest > current:
+                    self.queue.put(("update", f"Hay una version nueva: {tag}|{url}"))
+                else:
+                    self.queue.put(("done", f"Ya tienes la ultima version: {APP_VERSION}"))
+            except Exception as exc:
+                self.queue.put(("error", str(exc)))
+
+        self._run_worker(work)
+
     def _build_patch(self) -> None:
         mod = self._validate_mod()
         if not mod:
             return
         output = Path(self.output_dir.get().strip('" '))
         smoke = Path(self.smoke_mod.get().strip('" '))
-        icon_text = self.icon_path.get().strip('" ')
-        icon = Path(icon_text) if icon_text else None
         icon_text = self.icon_path.get().strip('" ')
         icon = Path(icon_text) if icon_text else None
 
@@ -992,6 +1034,12 @@ class StudioApp:
                     self.progress.stop()
                     self._log(message)
                     self.messagebox.showinfo(APP_TITLE, message)
+                elif kind == "update":
+                    self.progress.stop()
+                    text, url = message.split("|", 1)
+                    self._log(text)
+                    if self.messagebox.askyesno(APP_TITLE, text + "\n\nQuieres abrir la descarga?"):
+                        webbrowser.open(url)
                 elif kind == "error":
                     self.progress.stop()
                     self._log("ERROR: " + message)
@@ -1013,7 +1061,6 @@ def main() -> int:
     parser.add_argument("--mode", choices=["patch", "standalone", "integrate"], default="patch")
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--smoke-mod", type=Path, default=DEFAULT_SMOKE_MOD)
-    parser.add_argument("--icon", type=Path, help="Foto para convertir a mod_icon.jpg")
     parser.add_argument("--icon", type=Path, help="Foto para convertir a mod_icon.jpg")
     args = parser.parse_args()
 
