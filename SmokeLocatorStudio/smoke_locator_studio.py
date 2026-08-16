@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.8"
+APP_VERSION = "0.3.9"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -104,11 +104,14 @@ SMOKE_PROFILE_SCALES = {
     "Pesado": 1.5,
 }
 SMOKE_DIRECTION_ROTATIONS = {
-    "Arriba": (0.0, 0.0, 0.0, 1.0),
-    "Original PM": (0.0, 0.0, 1.0, 0.0),
-    "Lateral A": (0.70710677, 0.0, 0.0, 0.70710677),
-    "Lateral B": (-0.70710677, 0.0, 0.0, 0.70710677),
+    "Arriba": (0.70710677, -0.70710677, 0.0, 0.0),
+    "Abajo": (0.70710677, 0.70710677, 0.0, 0.0),
+    "Adelante": (1.0, 0.0, 0.0, 0.0),
+    "Atras": (0.0, 0.0, 1.0, 0.0),
+    "Izquierda": (0.70710677, 0.0, -0.70710677, 0.0),
+    "Derecha": (0.70710677, 0.0, 0.70710677, 0.0),
 }
+SMOKE_DIRECTION_CHOICES = ["Automatico"] + list(SMOKE_DIRECTION_ROTATIONS)
 CLEANUP_MODES = {
     "Al terminar bien": "success",
     "Siempre": "always",
@@ -134,6 +137,7 @@ class LocatorCandidate:
     position: tuple[float, float, float]
     bounds: tuple[float, float, float, float, float, float]
     outlet_position: tuple[float, float, float]
+    suggested_direction: str
 
 
 @dataclass(frozen=True)
@@ -539,6 +543,42 @@ def outlet_from_position_and_bounds(
     return (x_value, y_outlet, max_z)
 
 
+def suggested_direction_from_bounds(
+    position: tuple[float, float, float], bounds: tuple[float, float, float, float, float, float]
+) -> str:
+    min_x, min_y, min_z, max_x, max_y, max_z = bounds
+    x_span = max_x - min_x
+    y_span = max_y - min_y
+    z_span = max_z - min_z
+    if y_span >= max(x_span, z_span, 0.1) * 1.15:
+        return "Arriba"
+
+    x_value, _y_value, z_value = position
+    distances = {
+        "Izquierda": abs(x_value - min_x),
+        "Derecha": abs(max_x - x_value),
+        "Atras": abs(z_value - min_z),
+        "Adelante": abs(max_z - z_value),
+    }
+    return min(distances, key=distances.get)
+
+
+def smoke_rotation_for_direction(
+    direction: str, position: tuple[float, float, float], bounds: tuple[float, float, float, float, float, float]
+) -> tuple[float, float, float, float]:
+    selected = suggested_direction_from_bounds(position, bounds) if direction == "Automatico" else direction
+    return SMOKE_DIRECTION_ROTATIONS.get(selected, SMOKE_DIRECTION_ROTATIONS["Arriba"])
+
+
+def direction_for_rotation(rotation: tuple[float, float, float, float] | None, fallback: str) -> str:
+    if rotation is None:
+        return fallback
+    for name, candidate in SMOKE_DIRECTION_ROTATIONS.items():
+        if all(abs(rotation[index] - candidate[index]) < 0.0001 for index in range(4)):
+            return name
+    return fallback
+
+
 def inspect_pim_locator_candidates(
     pim_path: Path,
     pim_rel: str,
@@ -586,6 +626,7 @@ def inspect_pim_locator_candidates(
                     position=final_position,
                     bounds=candidate_bounds,
                     outlet_position=outlet_from_position_and_bounds(final_position, candidate_bounds),
+                    suggested_direction=suggested_direction_from_bounds(final_position, candidate_bounds),
                 )
             )
     return candidates
@@ -597,7 +638,7 @@ def patch_pim_with_smoke(
     skip_part_names: set[str] | None = None,
     locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
     smoke_scale: float = 1.0,
-    smoke_rotation: tuple[float, float, float, float] = SMOKE_DIRECTION_ROTATIONS["Arriba"],
+    smoke_direction: str = "Automatico",
     locator_edits: dict[str, LocatorEdit] | None = None,
 ) -> tuple[int, int, int, list[str]]:
     text = pim_path.read_text(encoding="utf-8", errors="ignore")
@@ -644,13 +685,24 @@ def patch_pim_with_smoke(
         if pieces and part_name in skip_part_names:
             skipped_parts.add(part_name)
         elif pieces:
+            part_bounds = locator_bounds_from_pieces(piece_vertices, pieces, locator_offset)
             positions = locator_positions_from_pieces(piece_vertices, pieces)
             for ordinal, position in enumerate(positions, 1):
                 edit = (locator_edits or {}).get(locator_key(pim_rel, part_identity, ordinal))
                 if edit and not edit.enabled:
                     continue
                 position = edit.position if edit else apply_offset(position, locator_offset)
-                rotation = edit.rotation if edit and edit.rotation else smoke_rotation
+                candidate_bounds = part_bounds or (
+                    position[0],
+                    position[1],
+                    position[2],
+                    position[0],
+                    position[1],
+                    position[2],
+                )
+                rotation = edit.rotation if edit and edit.rotation else smoke_rotation_for_direction(
+                    smoke_direction, position, candidate_bounds
+                )
                 index = next_locator
                 next_locator += 1
                 added += 1
@@ -1118,7 +1170,7 @@ def build_smoke_patch(
     icon_path: Path | None = None,
     locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
     smoke_scale: float = 1.0,
-    smoke_rotation: tuple[float, float, float, float] = SMOKE_DIRECTION_ROTATIONS["Arriba"],
+    smoke_direction: str = "Automatico",
     locator_edits: dict[str, LocatorEdit] | None = None,
     cleanup_mode: str = "success",
     diagnostic: bool = False,
@@ -1173,7 +1225,7 @@ def build_smoke_patch(
                 skip_part_names=skip_parts,
                 locator_offset=locator_offset,
                 smoke_scale=smoke_scale,
-                smoke_rotation=smoke_rotation,
+                smoke_direction=smoke_direction,
                 locator_edits=locator_edits,
             )
             locator_count += added
@@ -1282,7 +1334,7 @@ class StudioApp:
         self.smoke_mod = tk.StringVar(value=str(DEFAULT_SMOKE_MOD))
         self.icon_path = tk.StringVar()
         self.smoke_profile = tk.StringVar(value="Actual")
-        self.smoke_direction = tk.StringVar(value="Arriba")
+        self.smoke_direction = tk.StringVar(value="Automatico")
         self.offset_x = tk.StringVar(value="0.00")
         self.offset_y = tk.StringVar(value="0.00")
         self.offset_z = tk.StringVar(value="0.00")
@@ -1400,7 +1452,7 @@ class StudioApp:
         ttk.Combobox(
             options_panel,
             textvariable=self.smoke_direction,
-            values=list(SMOKE_DIRECTION_ROTATIONS),
+            values=SMOKE_DIRECTION_CHOICES,
             width=14,
             state="readonly",
         ).pack(side="left", padx=(8, 0))
@@ -1500,8 +1552,8 @@ class StudioApp:
     def _smoke_scale(self) -> float:
         return SMOKE_PROFILE_SCALES.get(self.smoke_profile.get(), 1.0)
 
-    def _smoke_rotation(self) -> tuple[float, float, float, float]:
-        return SMOKE_DIRECTION_ROTATIONS.get(self.smoke_direction.get(), SMOKE_DIRECTION_ROTATIONS["Arriba"])
+    def _smoke_direction(self) -> str:
+        return self.smoke_direction.get() if self.smoke_direction.get() in SMOKE_DIRECTION_CHOICES else "Automatico"
 
     def _choose_mod(self) -> None:
         paths = self.filedialog.askopenfilenames(
@@ -1585,7 +1637,7 @@ class StudioApp:
         install_label = "si" if self.install.get() else "no"
         profile = self.smoke_profile.get()
         smoke_scale = self._smoke_scale()
-        smoke_direction = self.smoke_direction.get()
+        smoke_direction = self._smoke_direction()
         cleanup = self.cleanup_label.get()
 
         def work() -> None:
@@ -1654,10 +1706,14 @@ class StudioApp:
         state: dict[str, dict[str, object]] = {}
         for candidate in candidates:
             edit = self.locator_edits.get(candidate.key) if self.locator_editor_source == mod_source else None
+            default_direction = candidate.suggested_direction if self._smoke_direction() == "Automatico" else self._smoke_direction()
+            selected_direction = direction_for_rotation(edit.rotation if edit else None, default_direction)
             state[candidate.key] = {
                 "candidate": candidate,
                 "enabled": edit.enabled if edit else True,
                 "position": list(edit.position if edit else candidate.position),
+                "direction": selected_direction,
+                "rotation": SMOKE_DIRECTION_ROTATIONS[selected_direction],
             }
 
         selected_key = tk.StringVar(value=candidates[0].key)
@@ -1669,6 +1725,7 @@ class StudioApp:
         y_var = tk.StringVar()
         z_var = tk.StringVar()
         step_var = tk.StringVar(value="0.02")
+        direction_var = tk.StringVar()
         isolate_var = tk.BooleanVar(value=True)
 
         outer = ttk.Frame(win, padding=14)
@@ -1744,6 +1801,15 @@ class StudioApp:
         ttk.Entry(right, textvariable=z_var, width=10).grid(row=4, column=1, sticky="w", pady=4)
         ttk.Label(right, text="Paso", style="Card.TLabel").grid(row=4, column=2, sticky="w", pady=4, padx=(12, 0))
         ttk.Entry(right, textvariable=step_var, width=10).grid(row=4, column=3, sticky="w", pady=4)
+        ttk.Label(right, text="Direccion", style="Card.TLabel").grid(row=5, column=0, sticky="w", pady=4)
+        direction_combo = ttk.Combobox(
+            right,
+            textvariable=direction_var,
+            values=list(SMOKE_DIRECTION_ROTATIONS),
+            width=12,
+            state="readonly",
+        )
+        direction_combo.grid(row=5, column=1, columnspan=3, sticky="w", pady=4)
 
         def fmt(value: float) -> str:
             return f"{value:.3f}"
@@ -1859,6 +1925,7 @@ class StudioApp:
             x_var.set(fmt(float(position[0])))
             y_var.set(fmt(float(position[1])))
             z_var.set(fmt(float(position[2])))
+            direction_var.set(str(item.get("direction") or "Arriba"))
             if tree.selection() != (key,):
                 tree.selection_set(key)
             tree.see(key)
@@ -1875,6 +1942,9 @@ class StudioApp:
                 return False
             state[key]["enabled"] = bool(enabled_var.get())
             state[key]["position"] = position
+            selected_direction = direction_var.get() if direction_var.get() in SMOKE_DIRECTION_ROTATIONS else "Arriba"
+            state[key]["direction"] = selected_direction
+            state[key]["rotation"] = SMOKE_DIRECTION_ROTATIONS[selected_direction]
             tree.item(key, values=row_values(key))
             draw()
             return True
@@ -1925,6 +1995,15 @@ class StudioApp:
                 load_selected(selected_key.get())
             draw()
 
+        def apply_direction_to_visible() -> None:
+            selected_direction = direction_var.get() if direction_var.get() in SMOKE_DIRECTION_ROTATIONS else "Arriba"
+            for key in visible_keys():
+                state[key]["direction"] = selected_direction
+                state[key]["rotation"] = SMOKE_DIRECTION_ROTATIONS[selected_direction]
+            if selected_key.get() in state:
+                load_selected(selected_key.get())
+            draw()
+
         def model_changed(_event: object | None = None) -> None:
             if selected_key.get() and selected_key.get() in state:
                 apply_selected()
@@ -1938,6 +2017,8 @@ class StudioApp:
             assert isinstance(candidate, LocatorCandidate)
             state[key]["enabled"] = True
             state[key]["position"] = list(candidate.position)
+            state[key]["direction"] = candidate.suggested_direction
+            state[key]["rotation"] = SMOKE_DIRECTION_ROTATIONS[candidate.suggested_direction]
             load_selected(key)
             tree.item(key, values=row_values(key))
 
@@ -1949,9 +2030,12 @@ class StudioApp:
             for key, item in state.items():
                 position = item["position"]
                 assert isinstance(position, list)
+                rotation = item["rotation"]
+                assert isinstance(rotation, tuple)
                 self.locator_edits[key] = LocatorEdit(
                     enabled=bool(item["enabled"]),
                     position=(float(position[0]), float(position[1]), float(position[2])),
+                    rotation=rotation,
                 )
             active = sum(1 for item in state.values() if item["enabled"])
             self._log(f"Editor locators guardado: {active}/{len(state)} activos para {Path(mod_source).name}")
@@ -1965,9 +2049,16 @@ class StudioApp:
         tree.bind("<<TreeviewSelect>>", on_select)
         canvas.bind("<Configure>", lambda _event: draw())
         model_combo.bind("<<ComboboxSelected>>", model_changed)
+        direction_combo.bind("<<ComboboxSelected>>", lambda _event: apply_selected())
+
+        direction_buttons = ttk.Frame(right, style="Panel.TFrame")
+        direction_buttons.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        ttk.Button(direction_buttons, text="Aplicar direccion a visibles", command=apply_direction_to_visible).pack(
+            side="left"
+        )
 
         nudge_buttons = ttk.Frame(right, style="Panel.TFrame")
-        nudge_buttons.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(14, 0))
+        nudge_buttons.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(14, 0))
         ttk.Button(nudge_buttons, text="X -", command=lambda: nudge(0, -1)).pack(side="left")
         ttk.Button(nudge_buttons, text="X +", command=lambda: nudge(0, 1)).pack(side="left", padx=(6, 0))
         ttk.Button(nudge_buttons, text="Y -", command=lambda: nudge(1, -1)).pack(side="left", padx=(14, 0))
@@ -1976,7 +2067,7 @@ class StudioApp:
         ttk.Button(nudge_buttons, text="Z +", command=lambda: nudge(2, 1)).pack(side="left", padx=(6, 0))
 
         outlet_buttons = ttk.Frame(right, style="Panel.TFrame")
-        outlet_buttons.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        outlet_buttons.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(10, 0))
         ttk.Button(outlet_buttons, text="Mover a salida sugerida", command=move_to_outlet).pack(side="left")
         ttk.Button(outlet_buttons, text="Mover visibles a salida alta", command=move_visible_to_outlets).pack(
             side="left", padx=(8, 0)
@@ -1991,10 +2082,10 @@ class StudioApp:
             right,
             text="Tip: usa 0.02 para detalle fino o 0.10 para mover mas rapido.",
             style="Hint.TLabel",
-        ).grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ).grid(row=9, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         buttons = ttk.Frame(right, style="Panel.TFrame")
-        buttons.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(18, 0))
+        buttons.grid(row=10, column=0, columnspan=4, sticky="ew", pady=(18, 0))
         ttk.Button(buttons, text="Aplicar punto", command=apply_selected).pack(side="left")
         ttk.Button(buttons, text="Restablecer punto", command=reset_selected).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Guardar y cerrar", style="Accent.TButton", command=save_and_close).pack(side="right")
@@ -2050,7 +2141,7 @@ class StudioApp:
         if locator_offset is None:
             return
         smoke_scale = self._smoke_scale()
-        smoke_rotation = self._smoke_rotation()
+        smoke_direction = self._smoke_direction()
 
         def work() -> None:
             try:
@@ -2066,7 +2157,7 @@ class StudioApp:
                         icon_path=icon,
                         locator_offset=locator_offset,
                         smoke_scale=smoke_scale,
-                        smoke_rotation=smoke_rotation,
+                        smoke_direction=smoke_direction,
                         locator_edits=self.locator_edits if str(mod.resolve()) == self.locator_editor_source else None,
                         cleanup_mode=self._cleanup_mode(),
                         diagnostic=self.diagnostic.get(),
@@ -2148,7 +2239,7 @@ def main() -> int:
     parser.add_argument("--offset-z", type=float, default=0.0, help="Manual Z offset for generated locators")
     parser.add_argument("--smoke-profile", choices=list(SMOKE_PROFILE_SCALES), default="Actual")
     parser.add_argument("--smoke-scale", type=float, help="Manual smoke locator scale; overrides --smoke-profile")
-    parser.add_argument("--smoke-direction", choices=list(SMOKE_DIRECTION_ROTATIONS), default="Arriba")
+    parser.add_argument("--smoke-direction", choices=SMOKE_DIRECTION_CHOICES, default="Automatico")
     parser.add_argument("--cleanup-mode", choices=["success", "always", "never"], default="success")
     parser.add_argument("--diagnostic", action="store_true")
     args = parser.parse_args()
@@ -2156,7 +2247,6 @@ def main() -> int:
     smoke_mod = args.smoke_mod or default_smoke_mod(args.game)
     locator_offset = (args.offset_x, args.offset_y, args.offset_z)
     smoke_scale = args.smoke_scale if args.smoke_scale is not None else SMOKE_PROFILE_SCALES[args.smoke_profile]
-    smoke_rotation = SMOKE_DIRECTION_ROTATIONS[args.smoke_direction]
 
     if args.cli:
         if not args.mod:
@@ -2174,7 +2264,7 @@ def main() -> int:
                     icon_path=args.icon,
                     locator_offset=locator_offset,
                     smoke_scale=smoke_scale,
-                    smoke_rotation=smoke_rotation,
+                    smoke_direction=args.smoke_direction,
                     cleanup_mode=args.cleanup_mode,
                     diagnostic=args.diagnostic,
                 )
