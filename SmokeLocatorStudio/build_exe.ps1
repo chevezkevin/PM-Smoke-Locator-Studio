@@ -30,6 +30,8 @@ if ($pyInstallerExit -ne 0) {
 
 python -m pip install --user pillow
 
+python -m pip install --user pillow
+
 $addTools = "$tools;work\tools"
 $addAssets = "$assets;SmokeLocatorStudio\assets"
 

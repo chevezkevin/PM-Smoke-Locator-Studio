@@ -38,6 +38,7 @@ WORK = (Path.home() / "Documents" / "PM Smoke Locator Studio" / "work") if getat
 TOOLS = BUNDLE / "work" / "tools"
 DEFAULT_ICON = BUNDLE / "SmokeLocatorStudio" / "assets" / "mod_icon.jpg"
 MOD_ICON_SIZE = (276, 162)
+MOD_ICON_SIZE = (276, 162)
 CONVERTER_PIX = TOOLS / "converter_pix" / "converter_pix.exe"
 CONVERSION_TOOLS_ZIP = TOOLS / "conversion_tools_2_21.zip"
 EXTRACTOR = TOOLS / "sk_extractor_gh" / "extractor.exe"
@@ -905,6 +906,15 @@ class StudioApp:
         if path:
             self.icon_path.set(path)
 
+    def _choose_icon(self) -> None:
+        path = self.filedialog.askopenfilename(
+            title="Seleccionar foto del mod",
+            filetypes=[("Imagenes", "*.jpg *.jpeg *.png *.bmp *.webp"), ("Todos", "*.*")],
+            initialdir=str(Path.home() / "Pictures"),
+        )
+        if path:
+            self.icon_path.set(path)
+
     def _run_worker(self, target: Callable[[], None]) -> None:
         if self.worker and self.worker.is_alive():
             self.messagebox.showwarning(APP_TITLE, "Ya hay un trabajo corriendo.")
@@ -940,6 +950,8 @@ class StudioApp:
             return
         output = Path(self.output_dir.get().strip('" '))
         smoke = Path(self.smoke_mod.get().strip('" '))
+        icon_text = self.icon_path.get().strip('" ')
+        icon = Path(icon_text) if icon_text else None
         icon_text = self.icon_path.get().strip('" ')
         icon = Path(icon_text) if icon_text else None
 
@@ -1001,6 +1013,7 @@ def main() -> int:
     parser.add_argument("--mode", choices=["patch", "standalone", "integrate"], default="patch")
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--smoke-mod", type=Path, default=DEFAULT_SMOKE_MOD)
+    parser.add_argument("--icon", type=Path, help="Foto para convertir a mod_icon.jpg")
     parser.add_argument("--icon", type=Path, help="Foto para convertir a mod_icon.jpg")
     args = parser.parse_args()
 
