@@ -32,6 +32,7 @@ Herramienta visual para crear locators `model.particle.smoke_new` en modelos de 
 - La salida sugerida ahora usa la altura superior del escape y puede aplicarse a todos los locators visibles.
 - Mantiene la direccion/rotacion original de PM como predeterminada y conserva las mejoras de posicion/altura.
 - Permite direccion de humo opcional por escape y ajuste por locator desde el editor visual.
+- Incluye boton `Manual` para descargar una guia paso a paso de todas las funciones.
 
 ## Uso normal
 
@@ -62,7 +63,7 @@ dist\PMSmokeLocatorStudio.exe
 Tambien se crea una copia versionada:
 
 ```text
-dist\PMSmokeLocatorStudio_v0.3.10.exe
+dist\PMSmokeLocatorStudio_v0.3.11.exe
 ```
 
 ## Crear Setup
@@ -93,7 +94,7 @@ Para publicar actualizaciones:
 
 1. Sube el proyecto a GitHub.
 2. Cambia `APP_VERSION` y `installer.iss` a la nueva version.
-3. Crea un tag, por ejemplo `v0.3.10`.
+3. Crea un tag, por ejemplo `v0.3.11`.
 4. Sube el tag a GitHub.
 5. GitHub Actions compila el `.exe` y el `Setup`.
 6. La app instalada puede usar el boton `Actualizar` para descargar y abrir el Setup del ultimo Release.
@@ -101,8 +102,8 @@ Para publicar actualizaciones:
 Ejemplo:
 
 ```powershell
-git tag v0.3.10
-git push origin v0.3.10
+git tag v0.3.11
+git push origin v0.3.11
 ```
 
 ## Seguridad

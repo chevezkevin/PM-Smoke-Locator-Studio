@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.10"
+APP_VERSION = "0.3.11"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -202,6 +202,120 @@ def latest_release() -> tuple[str, str, str | None]:
     if not tag:
         raise ToolError("GitHub no devolvio una version valida.")
     return tag, url, setup_asset_url(data)
+
+
+def manual_text() -> str:
+    return f"""PM Smoke Locator Studio - Manual de uso
+Version: {APP_VERSION}
+
+1. Para que sirve
+Esta app agrega humo smoke_new a escapes de camiones ATS y ETS2. Puede crear un parche aparte, crear un mod completo nuevo o integrar el resultado dentro del PM Smoke principal.
+
+2. Orden recomendado
+1. Escoge el juego: ATS o ETS2.
+2. En Mod del camion, selecciona el .scs o .zip del camion.
+3. En Salida, deja la carpeta mod del juego o escoge otra carpeta.
+4. En PM Smoke principal, selecciona tu PM_389_Smoke_All_Trucks_ATS_1.60.zip cuando vas a integrar.
+5. Presiona Analizar para ver si encontro escapes.
+6. Presiona Vista previa para revisar cuantos locators va a crear.
+7. Si hace falta, abre Editor locators y ajusta los puntos.
+8. Presiona Crear humo.
+9. En el Mod Manager, pon el parche arriba del mod del camion.
+
+3. Juego ATS / ETS2
+ATS usa la carpeta Documents/American Truck Simulator/mod.
+ETS2 usa la carpeta Documents/Euro Truck Simulator 2/mod.
+La logica del humo sirve para ambos juegos, pero cada juego usa su propia carpeta de mods.
+
+4. Mod del camion
+Aqui va el camion que quieres adaptar. Puede ser .scs o .zip. La app extrae el mod, busca modelos de escape y les agrega locators de humo.
+
+5. Salida
+Aqui se guarda el parche o mod creado. Si activas Copiar a carpeta de salida, la app copia el resultado ahi.
+
+6. PM Smoke principal
+Usalo cuando eliges Integrar dentro del PM Smoke principal. La app mete el camion nuevo dentro de ese mod de humo sin tocar motores ni fisicas del camion.
+
+7. Foto del mod
+Puedes escoger una imagen propia. La app la convierte al formato que ATS/ETS2 usa para el icono del mod.
+
+8. Nivel
+Actual: humo normal recomendado.
+Suave: menos humo.
+Fuerte: mas humo.
+Pesado: humo mas denso.
+
+9. Ajuste manual locators X/Y/Z
+X - mueve a la izquierda.
+X + mueve a la derecha.
+Y - baja el humo.
+Y + sube el humo.
+Z - mueve hacia atras.
+Z + mueve hacia adelante.
+Usa cambios pequenos como 0.02 o 0.05 para afinar.
+
+10. Auto-limpieza
+Al terminar bien: borra temporales solo si todo sale bien.
+Siempre: borra temporales aunque falle.
+Nunca: deja temporales para revisar errores.
+
+11. Modo diagnostico
+Si un mod falla, guarda un reporte con detalles para revisar que paso.
+
+12. Direccion humo
+Original PM: recomendado. Usa la direccion original del PM Smoke, que normalmente se ve mejor en el juego.
+Automatico: intenta calcular direccion segun la pieza del escape.
+Arriba, Abajo, Adelante, Atras, Izquierda, Derecha: ajustes manuales especiales si un mod lo necesita.
+
+13. Modos de creacion
+Crear parche seguro aparte: recomendado. Crea un parche separado para poner arriba del camion.
+Crear mod completo nuevo: crea un mod nuevo con el humo incluido.
+Integrar dentro del PM Smoke principal: agrega el camion al mod PM Smoke principal.
+
+14. Botones principales
+Analizar: busca los escapes y muestra cuantos encontro.
+Vista previa: muestra lo que va a crear antes de modificar.
+Editor locators: permite mover cada punto de humo.
+Crear humo: crea el parche/mod final.
+Limpiar temporales: libera espacio borrando carpetas de trabajo.
+Limpiar log: limpia la pantalla de mensajes.
+Actualizar: descarga el setup nuevo desde GitHub Releases.
+Manual: guarda este manual en tu PC.
+
+15. Editor visual de locators
+Amarillo: punto de humo seleccionado.
+Verde: salida sugerida del escape.
+Rectangulo: referencia de la pieza del escape.
+Solo seleccionado: muestra solo el punto actual para verlo claro.
+Modelo de escape: filtra los puntos por escape.
+Usar este locator: activa o desactiva ese punto.
+X/Y/Z: mueve el punto exacto.
+Paso: cantidad que mueve cada boton.
+Mover a salida sugerida: lleva el punto amarillo a la salida verde.
+Mover visibles a salida alta: mueve todos los puntos visibles a la salida alta sugerida.
+Aplicar punto: guarda el cambio del punto actual.
+Guardar y cerrar: guarda todos los cambios del editor.
+
+16. Si el humo queda bajo
+Abre Editor locators, selecciona el modelo de escape, marca Solo seleccionado, usa Y + para subir o Mover a salida sugerida. Luego guarda y vuelve a crear humo.
+
+17. Si el humo sale en direccion rara
+Deja Direccion humo en Original PM. Esa es la direccion base recomendada. Solo cambia a Automatico o direcciones manuales si estas probando un mod especial.
+
+18. Si no encuentra escapes
+Activa Modo diagnostico y presiona Analizar otra vez. Algunos mods usan carpetas o nombres raros. Revisa el reporte creado en Documents/PM Smoke Locator Studio/work.
+
+19. Si sale No space left on device
+Presiona Limpiar temporales. Tambien puedes cambiar Auto-limpieza a Siempre si estas probando muchos mods grandes.
+
+20. Recomendacion final
+Para trabajar seguro usa:
+Juego correcto, Nivel Actual, Direccion humo Original PM, Crear parche seguro aparte y Copiar a carpeta de salida.
+"""
+
+
+def default_manual_path() -> Path:
+    return Path.home() / "Documents" / "PM Smoke Locator Studio" / f"PM_Smoke_Locator_Studio_Manual_v{APP_VERSION}.txt"
 
 
 def download_update_setup(tag: str, setup_url: str, log: LogFn = print) -> Path:
@@ -1377,6 +1491,7 @@ class StudioApp:
         header.pack(fill="x")
         ttk.Label(header, text=f"{APP_TITLE} {APP_VERSION}", style="Title.TLabel").pack(side="left", anchor="w")
         ttk.Button(header, text="Actualizar", command=self._check_updates).pack(side="right")
+        ttk.Button(header, text="Manual", command=self._save_manual).pack(side="right", padx=(0, 10))
         ttk.Label(
             outer,
             text="Selecciona un mod de camion, analiza sus escapes y crea el humo con smoke_new.",
@@ -2181,6 +2296,31 @@ class StudioApp:
 
     def _clear_log(self) -> None:
         self.log_text.delete("1.0", "end")
+
+    def _save_manual(self) -> None:
+        default_path = default_manual_path()
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        target = self.filedialog.asksaveasfilename(
+            title="Guardar manual",
+            initialdir=str(default_path.parent),
+            initialfile=default_path.name,
+            defaultextension=".txt",
+            filetypes=[("Texto", "*.txt"), ("Todos", "*.*")],
+        )
+        if not target:
+            return
+        path = Path(target)
+        try:
+            path.write_text(manual_text(), encoding="utf-8")
+        except Exception as exc:
+            self.messagebox.showerror(APP_TITLE, f"No pude guardar el manual:\n{exc}")
+            return
+        self._log(f"Manual guardado: {path}")
+        if self.messagebox.askyesno(APP_TITLE, "Manual guardado. Quieres abrirlo ahora?"):
+            try:
+                os.startfile(path)  # type: ignore[attr-defined]
+            except Exception as exc:
+                self.messagebox.showwarning(APP_TITLE, f"Manual guardado, pero no pude abrirlo:\n{exc}")
 
     def _pump_queue(self) -> None:
         try:
