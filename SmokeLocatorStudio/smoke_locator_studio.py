@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.11"
+APP_VERSION = "0.3.12"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -139,6 +139,8 @@ class LocatorCandidate:
     bounds: tuple[float, float, float, float, float, float]
     outlet_position: tuple[float, float, float]
     suggested_direction: str
+    outlet_kind: str
+    preview_vertices: tuple[tuple[float, float, float], ...]
 
 
 @dataclass(frozen=True)
@@ -285,9 +287,13 @@ Manual: guarda este manual en tu PC.
 15. Editor visual de locators
 Amarillo: punto de humo seleccionado.
 Verde: salida sugerida del escape.
-Rectangulo: referencia de la pieza del escape.
+Gris: puntos reales del modelo del escape.
+Rectangulo: limite de la pieza del escape.
 Solo seleccionado: muestra solo el punto actual para verlo claro.
 Modelo de escape: filtra los puntos por escape.
+Vista X/Z: ve el escape desde arriba.
+Vista X/Y: ve el escape de lado para revisar altura y curva.
+Vista Z/Y: ve el escape de frente/atras para revisar salida hacia adelante o atras.
 Usar este locator: activa o desactiva ese punto.
 X/Y/Z: mueve el punto exacto.
 Paso: cantidad que mueve cada boton.
@@ -302,13 +308,16 @@ Abre Editor locators, selecciona el modelo de escape, marca Solo seleccionado, u
 17. Si el humo sale en direccion rara
 Deja Direccion humo en Original PM. Esa es la direccion base recomendada. Solo cambia a Automatico o direcciones manuales si estas probando un mod especial.
 
-18. Si no encuentra escapes
+18. Boca inteligente
+La app usa vertices reales del escape para colocar el humo en la boca mas probable. Esto ayuda con escapes rectos, curvos, cortados a 45 grados y salidas laterales. Si no queda perfecto, usa el editor visual y mueve el punto amarillo encima de la boca verde.
+
+19. Si no encuentra escapes
 Activa Modo diagnostico y presiona Analizar otra vez. Algunos mods usan carpetas o nombres raros. Revisa el reporte creado en Documents/PM Smoke Locator Studio/work.
 
-19. Si sale No space left on device
+20. Si sale No space left on device
 Presiona Limpiar temporales. Tambien puedes cambiar Auto-limpieza a Siempre si estas probando muchos mods grandes.
 
-20. Recomendacion final
+21. Recomendacion final
 Para trabajar seguro usa:
 Juego correcto, Nivel Actual, Direccion humo Original PM, Crear parche seguro aparte y Copiar a carpeta de salida.
 """
@@ -622,17 +631,36 @@ def locator_positions_from_pieces(
     return smoke_positions(vertices)
 
 
+def vertices_from_pieces(
+    piece_vertices: dict[int, list[tuple[float, float, float]]],
+    pieces: list[int],
+    locator_offset: LocatorOffset = (0.0, 0.0, 0.0),
+) -> list[tuple[float, float, float]]:
+    vertices: list[tuple[float, float, float]] = []
+    for piece in pieces:
+        for vertex in piece_vertices.get(piece, []):
+            vertices.append(apply_offset(vertex, locator_offset))
+    return vertices
+
+
+def sampled_vertices(
+    vertices: list[tuple[float, float, float]], limit: int = 1100
+) -> tuple[tuple[float, float, float], ...]:
+    if len(vertices) <= limit:
+        return tuple(vertices)
+    step = max(1, len(vertices) // limit)
+    return tuple(vertices[::step][:limit])
+
+
 def locator_bounds_from_pieces(
     piece_vertices: dict[int, list[tuple[float, float, float]]], pieces: list[int], locator_offset: LocatorOffset
 ) -> tuple[float, float, float, float, float, float] | None:
-    vertices: list[tuple[float, float, float]] = []
-    for piece in pieces:
-        vertices.extend(piece_vertices.get(piece, []))
+    vertices = vertices_from_pieces(piece_vertices, pieces, locator_offset)
     if not vertices:
         return None
-    xs = [vertex[0] + locator_offset[0] for vertex in vertices]
-    ys = [vertex[1] + locator_offset[1] for vertex in vertices]
-    zs = [vertex[2] + locator_offset[2] for vertex in vertices]
+    xs = [vertex[0] for vertex in vertices]
+    ys = [vertex[1] for vertex in vertices]
+    zs = [vertex[2] for vertex in vertices]
     return (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
 
 
@@ -656,6 +684,57 @@ def outlet_from_position_and_bounds(
     if nearest == "z_min":
         return (x_value, y_outlet, min_z)
     return (x_value, y_outlet, max_z)
+
+
+def smart_outlet_from_vertices(
+    position: tuple[float, float, float],
+    bounds: tuple[float, float, float, float, float, float],
+    vertices: list[tuple[float, float, float]],
+) -> tuple[float, float, float]:
+    if not vertices:
+        return outlet_from_position_and_bounds(position, bounds)
+
+    min_x, min_y, min_z, max_x, max_y, max_z = bounds
+    x_span = max(max_x - min_x, 0.01)
+    y_span = max(max_y - min_y, 0.01)
+    z_span = max(max_z - min_z, 0.01)
+
+    top_cut = max(quantile([vertex[1] for vertex in vertices], 0.965), max_y - max(0.16, y_span * 0.12))
+    top_vertices = [vertex for vertex in vertices if vertex[1] >= top_cut] or vertices
+    horizontal_span = max(x_span, z_span)
+    radius = max(0.18, horizontal_span * 0.16)
+    local = [
+        vertex
+        for vertex in top_vertices
+        if horizontal_distance((vertex[0], 0.0, vertex[2]), (position[0], 0.0, position[2])) <= radius
+    ]
+    if len(local) < 8:
+        closest = sorted(
+            top_vertices,
+            key=lambda vertex: horizontal_distance((vertex[0], 0.0, vertex[2]), (position[0], 0.0, position[2])),
+        )
+        local = closest[: min(max(12, len(closest) // 12), 90)] or closest
+
+    mouth = average(local)
+    return (mouth[0], max(mouth[1], max_y) + 0.06, mouth[2])
+
+
+def outlet_kind_from_vertices(
+    position: tuple[float, float, float],
+    outlet: tuple[float, float, float],
+    bounds: tuple[float, float, float, float, float, float],
+) -> str:
+    min_x, min_y, min_z, max_x, max_y, max_z = bounds
+    x_span = max_x - min_x
+    y_span = max_y - min_y
+    z_span = max_z - min_z
+    horizontal_span = max(x_span, z_span, 0.01)
+    shift = horizontal_distance((position[0], 0.0, position[2]), (outlet[0], 0.0, outlet[2]))
+    if y_span < horizontal_span * 0.9:
+        return "lateral/bajo"
+    if shift > max(0.18, horizontal_span * 0.12):
+        return "curva/45"
+    return "recto"
 
 
 def suggested_direction_from_bounds(
@@ -720,17 +799,20 @@ def inspect_pim_locator_candidates(
         if not pieces:
             continue
         part_bounds = locator_bounds_from_pieces(piece_vertices, pieces, locator_offset)
+        part_vertices = vertices_from_pieces(piece_vertices, pieces, locator_offset)
+        preview_vertices = sampled_vertices(part_vertices)
         positions = locator_positions_from_pieces(piece_vertices, pieces)
         for ordinal, position in enumerate(positions, 1):
-            final_position = apply_offset(position, locator_offset)
+            detected_position = apply_offset(position, locator_offset)
             candidate_bounds = part_bounds or (
-                final_position[0],
-                final_position[1],
-                final_position[2],
-                final_position[0],
-                final_position[1],
-                final_position[2],
+                detected_position[0],
+                detected_position[1],
+                detected_position[2],
+                detected_position[0],
+                detected_position[1],
+                detected_position[2],
             )
+            final_position = smart_outlet_from_vertices(detected_position, candidate_bounds, part_vertices)
             candidates.append(
                 LocatorCandidate(
                     key=locator_key(pim_rel, part_identity, ordinal),
@@ -740,8 +822,10 @@ def inspect_pim_locator_candidates(
                     ordinal=ordinal,
                     position=final_position,
                     bounds=candidate_bounds,
-                    outlet_position=outlet_from_position_and_bounds(final_position, candidate_bounds),
+                    outlet_position=final_position,
                     suggested_direction=suggested_direction_from_bounds(final_position, candidate_bounds),
+                    outlet_kind=outlet_kind_from_vertices(detected_position, final_position, candidate_bounds),
+                    preview_vertices=preview_vertices,
                 )
             )
     return candidates
@@ -801,19 +885,23 @@ def patch_pim_with_smoke(
             skipped_parts.add(part_name)
         elif pieces:
             part_bounds = locator_bounds_from_pieces(piece_vertices, pieces, locator_offset)
+            part_vertices = vertices_from_pieces(piece_vertices, pieces, locator_offset)
             positions = locator_positions_from_pieces(piece_vertices, pieces)
             for ordinal, position in enumerate(positions, 1):
                 edit = (locator_edits or {}).get(locator_key(pim_rel, part_identity, ordinal))
                 if edit and not edit.enabled:
                     continue
-                position = edit.position if edit else apply_offset(position, locator_offset)
+                detected_position = apply_offset(position, locator_offset)
                 candidate_bounds = part_bounds or (
-                    position[0],
-                    position[1],
-                    position[2],
-                    position[0],
-                    position[1],
-                    position[2],
+                    detected_position[0],
+                    detected_position[1],
+                    detected_position[2],
+                    detected_position[0],
+                    detected_position[1],
+                    detected_position[2],
+                )
+                position = edit.position if edit else smart_outlet_from_vertices(
+                    detected_position, candidate_bounds, part_vertices
                 )
                 rotation = edit.rotation if edit and edit.rotation else smoke_rotation_for_direction(
                     smoke_direction, position, candidate_bounds
@@ -1843,6 +1931,7 @@ class StudioApp:
         step_var = tk.StringVar(value="0.02")
         direction_var = tk.StringVar()
         isolate_var = tk.BooleanVar(value=True)
+        view_var = tk.StringVar(value="X/Y lado")
 
         outer = ttk.Frame(win, padding=14)
         outer.pack(fill="both", expand=True)
@@ -1872,7 +1961,7 @@ class StudioApp:
         model_combo.grid(row=0, column=1, sticky="ew", padx=(10, 10))
         ttk.Label(model_bar, textvariable=model_summary, style="Hint.TLabel").grid(row=0, column=2, sticky="e")
 
-        columns = ("enabled", "locator", "x", "y", "z", "part", "model")
+        columns = ("enabled", "locator", "x", "y", "z", "kind", "part", "model")
         tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
         headings = {
             "enabled": "Usar",
@@ -1880,10 +1969,11 @@ class StudioApp:
             "x": "X",
             "y": "Y",
             "z": "Z",
+            "kind": "Tipo",
             "part": "Parte",
             "model": "Modelo",
         }
-        widths = {"enabled": 58, "locator": 48, "x": 82, "y": 82, "z": 82, "part": 170, "model": 260}
+        widths = {"enabled": 58, "locator": 48, "x": 76, "y": 76, "z": 76, "kind": 92, "part": 140, "model": 230}
         for column in columns:
             tree.heading(column, text=headings[column])
             tree.column(column, width=widths[column], anchor="w", stretch=column in {"part", "model"})
@@ -1901,9 +1991,17 @@ class StudioApp:
         view_controls.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 16))
         ttk.Label(
             view_controls,
-            text="Plano X/Z: gris = pieza, amarillo = humo, verde = salida sugerida",
+            text="Gris = modelo real, amarillo = humo, verde = boca detectada",
             style="Hint.TLabel",
         ).pack(side="left")
+        view_combo = ttk.Combobox(
+            view_controls,
+            textvariable=view_var,
+            values=["X/Z arriba", "X/Y lado", "Z/Y frente"],
+            width=12,
+            state="readonly",
+        )
+        view_combo.pack(side="left", padx=(10, 0))
         ttk.Checkbutton(view_controls, text="Solo seleccionado", variable=isolate_var, command=lambda: draw()).pack(
             side="right"
         )
@@ -1930,7 +2028,7 @@ class StudioApp:
         def fmt(value: float) -> str:
             return f"{value:.3f}"
 
-        def row_values(key: str) -> tuple[str, str, str, str, str, str, str]:
+        def row_values(key: str) -> tuple[str, str, str, str, str, str, str, str]:
             item = state[key]
             candidate = item["candidate"]
             position = item["position"]
@@ -1942,6 +2040,7 @@ class StudioApp:
                 fmt(float(position[0])),
                 fmt(float(position[1])),
                 fmt(float(position[2])),
+                candidate.outlet_kind,
                 candidate.part_name,
                 candidate.model_no_ext,
             )
@@ -1973,21 +2072,60 @@ class StudioApp:
             canvas.delete("all")
             width = max(canvas.winfo_width(), 320)
             height = max(canvas.winfo_height(), 260)
-            canvas.create_text(12, 12, anchor="nw", fill="#93a4b5", text="X - izquierda   X + derecha")
-            canvas.create_text(12, 32, anchor="nw", fill="#93a4b5", text="Z - atras        Z + adelante")
+            view = view_var.get()
+            if view == "X/Y lado":
+                axis_text = ("X - izquierda   X + derecha", "Y - abajo       Y + arriba")
+                project_index = (0, 1)
+            elif view == "Z/Y frente":
+                axis_text = ("Z - atras       Z + adelante", "Y - abajo       Y + arriba")
+                project_index = (2, 1)
+            else:
+                axis_text = ("X - izquierda   X + derecha", "Z - atras       Z + adelante")
+                project_index = (0, 2)
+            canvas.create_text(12, 12, anchor="nw", fill="#93a4b5", text=axis_text[0])
+            canvas.create_text(12, 32, anchor="nw", fill="#93a4b5", text=axis_text[1])
             keys_to_draw = [selected_key.get()] if isolate_var.get() and selected_key.get() in state else visible_keys()
             points: list[tuple[str, float, float, bool]] = []
             outlets: list[tuple[str, float, float]] = []
             bounds_items: list[tuple[str, tuple[float, float, float, float, float, float]]] = []
+            model_points: list[tuple[str, float, float]] = []
+
+            def project_tuple(point: tuple[float, float, float]) -> tuple[float, float]:
+                return point[project_index[0]], point[project_index[1]]
+
+            def bounds_projection(
+                bounds: tuple[float, float, float, float, float, float]
+            ) -> tuple[float, float, float, float]:
+                min_x, min_y, min_z, max_x, max_y, max_z = bounds
+                corners = [
+                    (min_x, min_y, min_z),
+                    (min_x, min_y, max_z),
+                    (min_x, max_y, min_z),
+                    (min_x, max_y, max_z),
+                    (max_x, min_y, min_z),
+                    (max_x, min_y, max_z),
+                    (max_x, max_y, min_z),
+                    (max_x, max_y, max_z),
+                ]
+                projected = [project_tuple(corner) for corner in corners]
+                values_a = [point[0] for point in projected]
+                values_b = [point[1] for point in projected]
+                return (min(values_a), min(values_b), max(values_a), max(values_b))
+
             for key in keys_to_draw:
                 item = state[key]
                 candidate = item["candidate"]
                 position = item["position"]
                 assert isinstance(candidate, LocatorCandidate)
                 assert isinstance(position, list)
-                points.append((key, float(position[0]), float(position[2]), bool(item["enabled"])))
-                outlets.append((key, candidate.outlet_position[0], candidate.outlet_position[2]))
+                point_a, point_b = project_tuple((float(position[0]), float(position[1]), float(position[2])))
+                outlet_a, outlet_b = project_tuple(candidate.outlet_position)
+                points.append((key, point_a, point_b, bool(item["enabled"])))
+                outlets.append((key, outlet_a, outlet_b))
                 bounds_items.append((key, candidate.bounds))
+                for vertex in candidate.preview_vertices:
+                    vertex_a, vertex_b = project_tuple(vertex)
+                    model_points.append((key, vertex_a, vertex_b))
             if not points:
                 canvas.create_text(width / 2, height / 2, fill="#93a4b5", text="No hay locators en este modelo")
                 return
@@ -1995,9 +2133,12 @@ class StudioApp:
             zs = [point[2] for point in points]
             xs.extend(outlet[1] for outlet in outlets)
             zs.extend(outlet[2] for outlet in outlets)
+            xs.extend(point[1] for point in model_points)
+            zs.extend(point[2] for point in model_points)
             for _key, bounds in bounds_items:
-                xs.extend([bounds[0], bounds[3]])
-                zs.extend([bounds[2], bounds[5]])
+                bounds_a_min, bounds_b_min, bounds_a_max, bounds_b_max = bounds_projection(bounds)
+                xs.extend([bounds_a_min, bounds_a_max])
+                zs.extend([bounds_b_min, bounds_b_max])
             min_x, max_x = min(xs), max(xs)
             min_z, max_z = min(zs), max(zs)
             pad = 42
@@ -2013,9 +2154,18 @@ class StudioApp:
             canvas.create_line(pad, height - pad, pad, pad, fill="#334155")
             if isolate_var.get():
                 canvas.create_text(width - 12, 12, anchor="ne", fill="#93a4b5", text="Viendo solo seleccionado")
+            model_draw = model_points
+            if len(model_draw) > 2600:
+                step = max(1, len(model_draw) // 2600)
+                model_draw = model_draw[::step]
+            for key, x_value, z_value in model_draw:
+                px, py = project(x_value, z_value)
+                color = "#475569" if key == selected_key.get() else "#26313d"
+                canvas.create_rectangle(px, py, px + 1, py + 1, outline=color)
             for key, bounds in bounds_items:
-                left, top = project(bounds[0], bounds[5])
-                right_px, bottom = project(bounds[3], bounds[2])
+                bounds_a_min, bounds_b_min, bounds_a_max, bounds_b_max = bounds_projection(bounds)
+                left, top = project(bounds_a_min, bounds_b_max)
+                right_px, bottom = project(bounds_a_max, bounds_b_min)
                 outline = "#facc15" if key == selected_key.get() else "#475569"
                 canvas.create_rectangle(left, top, right_px, bottom, outline=outline, width=2 if key == selected_key.get() else 1)
             for key, x_value, z_value in outlets:
@@ -2166,6 +2316,7 @@ class StudioApp:
         tree.bind("<<TreeviewSelect>>", on_select)
         canvas.bind("<Configure>", lambda _event: draw())
         model_combo.bind("<<ComboboxSelected>>", model_changed)
+        view_combo.bind("<<ComboboxSelected>>", lambda _event: draw())
         direction_combo.bind("<<ComboboxSelected>>", lambda _event: apply_selected())
 
         direction_buttons = ttk.Frame(right, style="Panel.TFrame")
