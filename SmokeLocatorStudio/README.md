@@ -19,6 +19,7 @@ Herramienta visual para crear locators `model.particle.smoke_new` en modelos de 
 - Limpia temporales de trabajo para evitar llenar el disco.
 - Muestra vista previa antes de crear, barra de espacio libre y permite importar varios mods a la vez.
 - Guarda diagnosticos cuando un mod falla.
+- Coloca `Actualizar` en la cabecera para separarlo de las acciones de crear humo.
 
 ## Uso normal
 
@@ -49,7 +50,7 @@ dist\PMSmokeLocatorStudio.exe
 Tambien se crea una copia versionada:
 
 ```text
-dist\PMSmokeLocatorStudio_v0.2.2.exe
+dist\PMSmokeLocatorStudio_v0.2.3.exe
 ```
 
 ## Crear Setup
@@ -80,7 +81,7 @@ Para publicar actualizaciones:
 
 1. Sube el proyecto a GitHub.
 2. Cambia `APP_VERSION` y `installer.iss` a la nueva version.
-3. Crea un tag, por ejemplo `v0.2.2`.
+3. Crea un tag, por ejemplo `v0.2.3`.
 4. Sube el tag a GitHub.
 5. GitHub Actions compila el `.exe` y el `Setup`.
 6. La app instalada puede usar el boton `Actualizar` para descargar y abrir el Setup del ultimo Release.
@@ -88,8 +89,8 @@ Para publicar actualizaciones:
 Ejemplo:
 
 ```powershell
-git tag v0.2.2
-git push origin v0.2.2
+git tag v0.2.3
+git push origin v0.2.3
 ```
 
 ## Seguridad

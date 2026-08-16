@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.2.3"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -1101,7 +1101,10 @@ class StudioApp:
         outer = ttk.Frame(self.root, padding=18)
         outer.pack(fill="both", expand=True)
 
-        ttk.Label(outer, text=f"{APP_TITLE} {APP_VERSION}", style="Title.TLabel").pack(anchor="w")
+        header = ttk.Frame(outer)
+        header.pack(fill="x")
+        ttk.Label(header, text=f"{APP_TITLE} {APP_VERSION}", style="Title.TLabel").pack(side="left", anchor="w")
+        ttk.Button(header, text="Actualizar", command=self._check_updates).pack(side="right")
         ttk.Label(
             outer,
             text="Selecciona un mod de camion, analiza sus escapes y crea el humo con smoke_new.",
@@ -1184,7 +1187,6 @@ class StudioApp:
         ttk.Button(actions, text="Analizar", command=self._analyze).pack(side="left")
         ttk.Button(actions, text="Vista previa", command=self._preview).pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="Crear humo", style="Accent.TButton", command=self._build_patch).pack(side="left", padx=10)
-        ttk.Button(actions, text="Actualizar", command=self._check_updates).pack(side="left")
         ttk.Button(actions, text="Limpiar temporales", command=self._cleanup_work).pack(side="left", padx=10)
         ttk.Button(actions, text="Limpiar log", command=self._clear_log).pack(side="right")
 
