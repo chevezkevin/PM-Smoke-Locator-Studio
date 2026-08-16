@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
@@ -7,7 +7,7 @@ $dist = Join-Path $projectRoot "dist"
 $work = Join-Path $projectRoot "build"
 $tools = Join-Path $projectRoot "work\tools"
 $assets = Join-Path $scriptDir "assets"
-$exeName = "PMSmokeLocatorStudio_v0.1.8"
+$exeName = "PMSmokeLocatorStudio_v0.1.9"
 
 if (!(Test-Path -LiteralPath $app)) {
     throw "No se encontro smoke_locator_studio.py"
@@ -27,6 +27,8 @@ if ($pyInstallerExit -ne 0) {
     Write-Host "Instalando PyInstaller..."
     python -m pip install --user pyinstaller
 }
+
+python -m pip install --user pillow
 
 $addTools = "$tools;work\tools"
 $addAssets = "$assets;SmokeLocatorStudio\assets"
