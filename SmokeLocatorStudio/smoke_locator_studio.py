@@ -20,7 +20,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.3.3"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -1587,6 +1587,9 @@ class StudioApp:
             }
 
         selected_key = tk.StringVar(value=candidates[0].key)
+        model_options = ["Todos"] + sorted({candidate.model_no_ext for candidate in candidates})
+        model_var = tk.StringVar(value="Todos")
+        model_summary = tk.StringVar()
         enabled_var = tk.BooleanVar(value=True)
         x_var = tk.StringVar()
         y_var = tk.StringVar()
@@ -1609,8 +1612,16 @@ class StudioApp:
 
         table_frame = ttk.Frame(body)
         table_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        table_frame.rowconfigure(0, weight=1)
+        table_frame.rowconfigure(1, weight=1)
         table_frame.columnconfigure(0, weight=1)
+
+        model_bar = ttk.Frame(table_frame)
+        model_bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        model_bar.columnconfigure(1, weight=1)
+        ttk.Label(model_bar, text="Modelo de escape", style="Card.TLabel").grid(row=0, column=0, sticky="w")
+        model_combo = ttk.Combobox(model_bar, textvariable=model_var, values=model_options, state="readonly")
+        model_combo.grid(row=0, column=1, sticky="ew", padx=(10, 10))
+        ttk.Label(model_bar, textvariable=model_summary, style="Hint.TLabel").grid(row=0, column=2, sticky="e")
 
         columns = ("enabled", "locator", "x", "y", "z", "part", "model")
         tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
@@ -1627,9 +1638,9 @@ class StudioApp:
         for column in columns:
             tree.heading(column, text=headings[column])
             tree.column(column, width=widths[column], anchor="w", stretch=column in {"part", "model"})
-        tree.grid(row=0, column=0, sticky="nsew")
+        tree.grid(row=1, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
-        scroll.grid(row=0, column=1, sticky="ns")
+        scroll.grid(row=1, column=1, sticky="ns")
         tree.configure(yscrollcommand=scroll.set)
 
         right = ttk.Frame(body, style="Panel.TFrame", padding=12)
@@ -1668,8 +1679,28 @@ class StudioApp:
                 candidate.model_no_ext,
             )
 
-        for candidate in candidates:
-            tree.insert("", "end", iid=candidate.key, values=row_values(candidate.key))
+        def visible_keys() -> list[str]:
+            selected_model = model_var.get()
+            keys: list[str] = []
+            for candidate in candidates:
+                if selected_model == "Todos" or candidate.model_no_ext == selected_model:
+                    keys.append(candidate.key)
+            return keys
+
+        def refill_tree() -> None:
+            current = selected_key.get()
+            tree.delete(*tree.get_children())
+            keys = visible_keys()
+            for key in keys:
+                tree.insert("", "end", iid=key, values=row_values(key))
+            model_summary.set(f"{len(keys)} de {len(candidates)} locators")
+            if current in keys:
+                load_selected(current)
+            elif keys:
+                load_selected(keys[0])
+            else:
+                selected_key.set("")
+                draw()
 
         def draw() -> None:
             canvas.delete("all")
@@ -1678,10 +1709,14 @@ class StudioApp:
             canvas.create_text(12, 12, anchor="nw", fill="#93a4b5", text="X - izquierda   X + derecha")
             canvas.create_text(12, 32, anchor="nw", fill="#93a4b5", text="Z - atras        Z + adelante")
             points: list[tuple[str, float, float, bool]] = []
-            for key, item in state.items():
+            for key in visible_keys():
+                item = state[key]
                 position = item["position"]
                 assert isinstance(position, list)
                 points.append((key, float(position[0]), float(position[2]), bool(item["enabled"])))
+            if not points:
+                canvas.create_text(width / 2, height / 2, fill="#93a4b5", text="No hay locators en este modelo")
+                return
             xs = [point[1] for point in points] or [0.0]
             zs = [point[2] for point in points] or [0.0]
             min_x, max_x = min(xs), max(xs)
@@ -1727,6 +1762,11 @@ class StudioApp:
             draw()
             return True
 
+        def model_changed(_event: object | None = None) -> None:
+            if selected_key.get() and selected_key.get() in state:
+                apply_selected()
+            refill_tree()
+
         def reset_selected() -> None:
             key = selected_key.get()
             if key not in state:
@@ -1761,6 +1801,7 @@ class StudioApp:
 
         tree.bind("<<TreeviewSelect>>", on_select)
         canvas.bind("<Configure>", lambda _event: draw())
+        model_combo.bind("<<ComboboxSelected>>", model_changed)
 
         buttons = ttk.Frame(right, style="Panel.TFrame")
         buttons.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(18, 0))
@@ -1768,7 +1809,7 @@ class StudioApp:
         ttk.Button(buttons, text="Restablecer punto", command=reset_selected).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Guardar y cerrar", style="Accent.TButton", command=save_and_close).pack(side="right")
 
-        load_selected(candidates[0].key)
+        refill_tree()
 
     def _check_updates(self) -> None:
         def work() -> None:
