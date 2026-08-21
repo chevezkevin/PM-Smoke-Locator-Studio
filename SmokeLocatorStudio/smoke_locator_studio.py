@@ -21,9 +21,10 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.19"
+APP_VERSION = "0.3.20"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
+GITHUB_LATEST_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 
@@ -190,9 +191,37 @@ def fetch_latest_release() -> dict:
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise ToolError("Todavia no hay Releases publicados en GitHub.") from exc
+        if exc.code == 403:
+            return fetch_latest_release_public()
         raise ToolError(f"No pude revisar GitHub: HTTP {exc.code}") from exc
     except Exception as exc:
         raise ToolError(f"No pude revisar actualizaciones: {exc}") from exc
+
+
+def fetch_latest_release_public() -> dict:
+    request = urllib.request.Request(
+        GITHUB_LATEST_URL,
+        headers={"User-Agent": f"Mozilla/5.0 {APP_TITLE}/{APP_VERSION}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=12) as response:
+            final_url = response.geturl()
+    except Exception as exc:
+        raise ToolError(f"No pude revisar GitHub por enlace publico: {exc}") from exc
+    tag = final_url.rstrip("/").split("/")[-1].strip()
+    if not re.match(r"^v?\d+\.\d+\.\d+", tag):
+        raise ToolError("GitHub no devolvio una version publica valida.")
+    setup_name = f"PMSmokeLocatorStudio_Setup_{tag}.exe"
+    return {
+        "tag_name": tag,
+        "html_url": f"https://github.com/{GITHUB_REPO}/releases/tag/{tag}",
+        "assets": [
+            {
+                "name": setup_name,
+                "browser_download_url": f"https://github.com/{GITHUB_REPO}/releases/download/{tag}/{setup_name}",
+            }
+        ],
+    }
 
 
 def setup_asset_url(data: dict) -> str | None:

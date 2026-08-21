@@ -16,6 +16,7 @@ Herramienta visual para crear locators `model.particle.smoke_new` en modelos de 
 - Incluye ajustes manuales `X/Y/Z` para mover los locators si un escape queda alto, bajo o corrido.
 - Usa un detector ampliado para encontrar escapes con nombres o carpetas menos comunes.
 - Descarga e inicia el `Setup` automaticamente desde GitHub Releases al usar `Actualizar`.
+- Usa un respaldo publico de GitHub Releases si la API devuelve `HTTP 403`.
 - Limpia temporales de trabajo para evitar llenar el disco.
 - Muestra vista previa antes de crear, barra de espacio libre y permite importar varios mods a la vez.
 - Guarda diagnosticos cuando un mod falla.
@@ -71,7 +72,7 @@ dist\PMSmokeLocatorStudio.exe
 Tambien se crea una copia versionada:
 
 ```text
-dist\PMSmokeLocatorStudio_v0.3.19.exe
+dist\PMSmokeLocatorStudio_v0.3.20.exe
 ```
 
 ## Crear Setup
@@ -102,7 +103,7 @@ Para publicar actualizaciones:
 
 1. Sube el proyecto a GitHub.
 2. Cambia `APP_VERSION` y `installer.iss` a la nueva version.
-3. Crea un tag, por ejemplo `v0.3.19`.
+3. Crea un tag, por ejemplo `v0.3.20`.
 4. Sube el tag a GitHub.
 5. GitHub Actions compila el `.exe` y el `Setup`.
 6. La app instalada puede usar el boton `Actualizar` para descargar y abrir el Setup del ultimo Release.
@@ -110,8 +111,8 @@ Para publicar actualizaciones:
 Ejemplo:
 
 ```powershell
-git tag v0.3.19
-git push origin v0.3.19
+git tag v0.3.20
+git push origin v0.3.20
 ```
 
 ## Seguridad
