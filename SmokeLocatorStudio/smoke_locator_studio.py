@@ -21,7 +21,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.20"
+APP_VERSION = "0.3.21"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
@@ -1101,24 +1101,31 @@ def smart_outlet_from_vertices(
     y_span = max(max_y - min_y, 0.01)
     z_span = max(max_z - min_z, 0.01)
 
-    top_cut = max(quantile([vertex[1] for vertex in vertices], 0.965), max_y - max(0.16, y_span * 0.12))
-    top_vertices = [vertex for vertex in vertices if vertex[1] >= top_cut] or vertices
     horizontal_span = max(x_span, z_span)
-    radius = max(0.18, horizontal_span * 0.16)
+    radius = max(0.20, horizontal_span * 0.14)
     local = [
         vertex
-        for vertex in top_vertices
+        for vertex in vertices
         if horizontal_distance((vertex[0], 0.0, vertex[2]), (position[0], 0.0, position[2])) <= radius
     ]
     if len(local) < 8:
         closest = sorted(
-            top_vertices,
+            vertices,
             key=lambda vertex: horizontal_distance((vertex[0], 0.0, vertex[2]), (position[0], 0.0, position[2])),
         )
         local = closest[: min(max(12, len(closest) // 12), 90)] or closest
+    near_height = [vertex for vertex in local if vertex[1] <= position[1] + max(0.35, y_span * 0.18)]
+    if len(near_height) >= 4:
+        local = near_height
 
-    mouth = average(local)
-    return (mouth[0], max(mouth[1], max_y) + 0.06, mouth[2])
+    local_ys = [vertex[1] for vertex in local]
+    local_top = max(local_ys)
+    top_cut = max(quantile(local_ys, 0.88), local_top - max(0.09, y_span * 0.04))
+    mouth_vertices = [vertex for vertex in local if vertex[1] >= top_cut] or local
+    mouth = average(mouth_vertices)
+    clearance = min(0.045, max(0.025, y_span * 0.012))
+    y_outlet = min(max(mouth[1], quantile(local_ys, 0.90)) + clearance, local_top + 0.045)
+    return (mouth[0], y_outlet, mouth[2])
 
 
 def outlet_kind_from_vertices(
