@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Split-Path -Parent $scriptDir
@@ -7,7 +7,7 @@ $dist = Join-Path $projectRoot "dist"
 $work = Join-Path $projectRoot "build"
 $tools = Join-Path $projectRoot "work\tools"
 $assets = Join-Path $scriptDir "assets"
-$exeName = "PMSmokeLocatorStudio_v0.3.18"
+$exeName = "PMSmokeLocatorStudio_v0.3.19"
 $genericExeName = "PMSmokeLocatorStudio"
 
 if (!(Test-Path -LiteralPath $app)) {
@@ -62,5 +62,4 @@ Write-Host (Join-Path $dist "$exeName.exe")
 
 Copy-Item -LiteralPath (Join-Path $dist "$exeName.exe") -Destination (Join-Path $dist "$genericExeName.exe") -Force
 Write-Host (Join-Path $dist "$genericExeName.exe")
-
 

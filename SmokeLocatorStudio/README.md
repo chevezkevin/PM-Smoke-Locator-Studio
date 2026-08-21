@@ -30,7 +30,7 @@ Herramienta visual para crear locators `model.particle.smoke_new` en modelos de 
 - El editor visual muestra por defecto solo el locator seleccionado, con opcion para ver todos los puntos.
 - Marca en verde una salida sugerida del escape y permite mover el locator directamente a esa posicion.
 - La salida sugerida ahora usa la altura superior del escape y puede aplicarse a todos los locators visibles.
-- Mantiene la direccion/rotacion original de PM como predeterminada y conserva las mejoras de posicion/altura.
+- Mantiene la direccion `Original PM` como predeterminada, corregida para que el humo salga hacia atras del escape.
 - Permite direccion de humo opcional por escape y ajuste por locator desde el editor visual.
 - Incluye boton `Manual` para descargar una guia paso a paso de todas las funciones.
 - Usa boca inteligente basada en vertices reales para acomodar mejor escapes rectos, curvos y cortados a 45 grados.
@@ -40,6 +40,7 @@ Herramienta visual para crear locators `model.particle.smoke_new` en modelos de 
 - Mejora el dibujo 3D usando caras reales del escape con sombreado, parecido a Blender.
 - Agrega boton `Abrir Blender` para exportar el escape seleccionado a OBJ y abrirlo en Blender real si esta instalado.
 - Corrige `Abrir Blender` para importar el OBJ con un script de Blender en vez de abrirlo como archivo principal.
+- Agrega `Editor PM principal` para abrir el PM_389_Smoke principal y ver locators reales `smoke_new` como referencia.
 
 ## Uso normal
 
@@ -70,7 +71,7 @@ dist\PMSmokeLocatorStudio.exe
 Tambien se crea una copia versionada:
 
 ```text
-dist\PMSmokeLocatorStudio_v0.3.18.exe
+dist\PMSmokeLocatorStudio_v0.3.19.exe
 ```
 
 ## Crear Setup
@@ -101,7 +102,7 @@ Para publicar actualizaciones:
 
 1. Sube el proyecto a GitHub.
 2. Cambia `APP_VERSION` y `installer.iss` a la nueva version.
-3. Crea un tag, por ejemplo `v0.3.18`.
+3. Crea un tag, por ejemplo `v0.3.19`.
 4. Sube el tag a GitHub.
 5. GitHub Actions compila el `.exe` y el `Setup`.
 6. La app instalada puede usar el boton `Actualizar` para descargar y abrir el Setup del ultimo Release.
@@ -109,8 +110,8 @@ Para publicar actualizaciones:
 Ejemplo:
 
 ```powershell
-git tag v0.3.18
-git push origin v0.3.18
+git tag v0.3.19
+git push origin v0.3.19
 ```
 
 ## Seguridad

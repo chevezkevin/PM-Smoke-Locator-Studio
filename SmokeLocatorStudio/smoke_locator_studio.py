@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -21,7 +21,7 @@ from typing import Callable
 
 
 APP_TITLE = "PM Smoke Locator Studio"
-APP_VERSION = "0.3.18"
+APP_VERSION = "0.3.19"
 GITHUB_REPO = "chevezkevin/PM-Smoke-Locator-Studio"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 GITHUB_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -106,11 +106,11 @@ SMOKE_PROFILE_SCALES = {
     "Pesado": 1.5,
 }
 SMOKE_DIRECTION_ROTATIONS = {
-    "Original PM": (6.123234262925839e-17, 0.0, 1.0, 0.0),
+    "Original PM": (1.0, 0.0, 0.0, 0.0),
     "Arriba": (0.70710677, -0.70710677, 0.0, 0.0),
     "Abajo": (0.70710677, 0.70710677, 0.0, 0.0),
-    "Adelante": (1.0, 0.0, 0.0, 0.0),
-    "Atras": (0.0, 0.0, 1.0, 0.0),
+    "Adelante": (0.0, 0.0, 1.0, 0.0),
+    "Atras": (1.0, 0.0, 0.0, 0.0),
     "Izquierda": (0.70710677, 0.0, -0.70710677, 0.0),
     "Derecha": (0.70710677, 0.0, 0.70710677, 0.0),
 }
@@ -146,6 +146,7 @@ class LocatorCandidate:
     preview_triangles: tuple[
         tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]], ...
     ] = ()
+    reference_position: tuple[float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -270,7 +271,7 @@ Nunca: deja temporales para revisar errores.
 Si un mod falla, guarda un reporte con detalles para revisar que paso.
 
 12. Direccion humo
-Original PM: recomendado. Usa la direccion original del PM Smoke, que normalmente se ve mejor en el juego.
+Original PM: recomendado. Usa la direccion base del PM Smoke corregida para que el humo salga hacia atras del escape, no hacia adelante.
 Automatico: intenta calcular direccion segun la pieza del escape.
 Arriba, Abajo, Adelante, Atras, Izquierda, Derecha: ajustes manuales especiales si un mod lo necesita.
 
@@ -283,6 +284,7 @@ Integrar dentro del PM Smoke principal: agrega el camion al mod PM Smoke princip
 Analizar: busca los escapes y muestra cuantos encontro.
 Vista previa: muestra lo que va a crear antes de modificar.
 Editor locators: permite mover cada punto de humo.
+Editor PM principal: abre el PM Smoke principal para ver los locators reales smoke_new que ya trae ese mod.
 Crear humo: crea el parche/mod final.
 Limpiar temporales: libera espacio borrando carpetas de trabajo.
 Limpiar log: limpia la pantalla de mensajes.
@@ -291,6 +293,7 @@ Manual: guarda este manual en tu PC.
 
 15. Editor visual de locators
 Amarillo: punto de humo seleccionado.
+Tipo PM real: ese punto viene de un locator smoke_new existente dentro del PM Smoke principal.
 Verde: salida sugerida del escape.
 Gris: silueta del modelo real del escape.
 Rectangulo: limite de la pieza del escape.
@@ -315,7 +318,7 @@ Guardar y cerrar: guarda todos los cambios del editor.
 Abre Editor locators, selecciona el modelo de escape, marca Solo seleccionado, usa Y + para subir o Mover a salida sugerida. Luego guarda y vuelve a crear humo.
 
 17. Si el humo sale en direccion rara
-Deja Direccion humo en Original PM. Esa es la direccion base recomendada. Solo cambia a Automatico o direcciones manuales si estas probando un mod especial.
+Deja Direccion humo en Original PM. Esa es la direccion base recomendada y empuja el humo hacia atras del escape. Solo cambia a Automatico o direcciones manuales si estas probando un mod especial.
 
 18. Boca inteligente
 La app usa vertices reales del escape para colocar el humo en la boca mas probable. Esto ayuda con escapes rectos, curvos, cortados a 45 grados y salidas laterales. Si no queda perfecto, usa el editor visual y mueve el punto amarillo encima de la boca verde.
@@ -1143,6 +1146,45 @@ def direction_for_rotation(rotation: tuple[float, float, float, float] | None, f
     return fallback
 
 
+def parse_locator_position(block: str) -> tuple[float, float, float] | None:
+    match = re.search(r"\bPosition:\s*\(\s*([^)]*?)\s*\)", block, flags=re.S)
+    if not match:
+        return None
+    values = match.group(1).split()
+    if len(values) < 3:
+        return None
+    try:
+        return (read_float_token(values[0]), read_float_token(values[1]), read_float_token(values[2]))
+    except ValueError:
+        return None
+
+
+def existing_smoke_positions_by_part(text: str) -> dict[str, list[tuple[float, float, float]]]:
+    _locator_blocks, locators_by_index = parse_locator_blocks(text)
+    smoke_positions: dict[int, tuple[float, float, float]] = {}
+    for index, block in locators_by_index.items():
+        if not is_smoke_locator(block):
+            continue
+        position = parse_locator_position(block)
+        if position is not None:
+            smoke_positions[index] = position
+
+    part_counts: dict[str, int] = {}
+    positions_by_part: dict[str, list[tuple[float, float, float]]] = {}
+    for part_match in re.finditer(r"Part \{\n.*?\n\}", text, flags=re.S):
+        block = part_match.group(0)
+        name_match = re.search(r'Name:\s*"([^"]+)"', block)
+        part_name = name_match.group(1) if name_match else "part"
+        part_counts[part_name] = part_counts.get(part_name, 0) + 1
+        part_identity = f"{part_name}#{part_counts[part_name]}"
+        locators_match = re.search(r"Locators:\s*([0-9 ]*)", block)
+        if not locators_match:
+            continue
+        locators = [int(value) for value in locators_match.group(1).split()]
+        part_positions = [smoke_positions[index] for index in locators if index in smoke_positions]
+        if part_positions:
+            positions_by_part[part_identity] = part_positions
+    return positions_by_part
 def inspect_pim_locator_candidates(
     pim_path: Path,
     pim_rel: str,
@@ -2267,6 +2309,31 @@ class StudioApp:
 
         self._run_worker(work)
 
+    def _open_smoke_locator_editor(self) -> None:
+        smoke = Path(self.smoke_mod.get().strip('" '))
+        if not smoke.exists():
+            self.messagebox.showerror(APP_TITLE, "Selecciona un PM Smoke principal valido.")
+            return
+        locator_offset = self._locator_offset()
+        if locator_offset is None:
+            return
+
+        def work() -> None:
+            try:
+                self._thread_log(f"Editor PM principal: {smoke.name}")
+                candidates = inspect_mod_locator_candidates(
+                    smoke,
+                    self._cleanup_mode(),
+                    locator_offset,
+                    self._thread_log,
+                )
+                real_count = sum(1 for candidate in candidates if candidate.reference_position is not None)
+                self._thread_log(f"  Locators reales PM encontrados: {real_count}")
+                self.queue.put(("locator_editor_ready", (str(smoke.resolve()), candidates)))
+            except Exception as exc:
+                self.queue.put(("error", str(exc)))
+
+        self._run_worker(work)
     def _show_locator_editor(self, mod_source: str, candidates: list[LocatorCandidate]) -> None:
         if not candidates:
             self.messagebox.showwarning(APP_TITLE, "No encontre locators para editar en ese mod.")
@@ -3397,5 +3464,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
 
